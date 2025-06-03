@@ -1,0 +1,45 @@
+
+import csv
+import logging 
+import os 
+
+from utils import byte_to_str, mac_to_str
+
+class RuntimeStats:
+    def __init__(self):
+        self.iter = 0
+        self.stats = {}
+
+    def new_iter(self):
+        self.iter += 1
+        self.stats[self.iter] = {}
+        
+    def append(self, uid, memory_footprint, num_ops, hbm_reads, network_data):
+        self.stats[self.iter][uid] = {"memory_footprint": memory_footprint, "num_ops": num_ops, "hbm_reads": hbm_reads, "network_data": network_data}
+
+    def sumUp(self):
+        memory_footprint = sum([self.stats[self.iter][uid]["memory_footprint"] for uid in self.stats[self.iter]])
+        num_ops = sum([self.stats[self.iter][uid]["num_ops"] for uid in self.stats[self.iter]])
+        hbm_reads = sum([self.stats[self.iter][uid]["hbm_reads"] for uid in self.stats[self.iter]])
+        network_data = sum([self.stats[self.iter][uid]["network_data"] for uid in self.stats[self.iter]])
+        return memory_footprint, num_ops, hbm_reads, network_data
+
+    def write_to_csv(self, fname):
+        if not os.path.exists(os.path.dirname(fname)):
+            os.makedirs(os.path.dirname(fname))
+            
+        with open(fname, "w") as f:
+            fieldnames = ["uid", "memory_footprint", "num_ops", "hbm_reads", "network_data"]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writerows([{"uid":"uid", "memory_footprint":"memory_footprint (B)", "num_ops":"num_ops (MAC)", "hbm_reads":"hbm_reads (B)", "network_data":"network_data (B)"}])
+            writer.writerows([{"uid": uid} | self.stats[self.iter][uid] for uid in self.stats[self.iter]])
+
+    def summarize(self):
+        memory_footprint, num_ops, hbm_reads, network_data = self.sumUp()
+
+        logging.info("--------- Summary -----------")
+        logging.info("memory_footprint: {}".format(byte_to_str(memory_footprint)))
+        logging.info("num_ops: {}".format(mac_to_str(num_ops)))
+        logging.info("hbm_reads: {}".format(byte_to_str(hbm_reads)))
+        logging.info("network_data: {}".format(byte_to_str(network_data)))
+        logging.info("--------- End of Summary -----------")
