@@ -1,0 +1,73 @@
+
+import numpy as np
+import torch 
+import matplotlib.pyplot as plt 
+import logging 
+import json 
+
+class MoEGateModel:
+    def __init__(self, num_experts_per_tok, n_routed_experts, layer_ids, workload_model) -> None:
+        self.num_experts_per_tok = num_experts_per_tok
+        self.n_routed_experts = n_routed_experts
+        self.layer_ids = layer_ids
+
+        if workload_model == "uniform":
+            self.probs = {}
+            for l, layer_id in enumerate(layer_ids):
+                self.probs[layer_id] = np.ones(shape=[n_routed_experts])/n_routed_experts
+
+        elif workload_model == "empirical_mmlu":
+            with open("bincounts.json", "r") as f:
+                bincounts = json.load(f)
+
+            self.probs = {}
+            for l, layer_id in enumerate(layer_ids):
+                self.probs[layer_id] = bincounts[str(l)] / np.sum(bincounts[str(l)])
+        else:
+            raise NotImplementedError
+
+        self.iter_id = None
+        self.expert_routings = {}
+        
+    def new_iter(self, iter_id, bsz, seqlen):
+        self.iter_id = iter_id
+
+        if self.iter_id in self.expert_routings:
+            return 
+        
+        logging.info("MoEGateModel new iter: {} with bsz: {} and seqlen: {}".format(iter_id, bsz, seqlen))
+
+        self.expert_routings[self.iter_id] = {}
+        for layer_id in self.layer_ids:
+            self.expert_routings[self.iter_id][layer_id] = np.random.choice(a=np.arange(0,self.n_routed_experts), size=[self.num_experts_per_tok, bsz*seqlen], replace=True, p=self.probs[layer_id])
+        
+    def get_expert_routings(self, layer_id):
+        return self.expert_routings[self.iter_id][layer_id]
+
+    def get_bincounts(self, layer_id, expert_id):
+        expert_routings = self.get_expert_routings(layer_id)
+        return np.count_nonzero(expert_routings == expert_id)
+
+moe_gate_model = None
+
+def get_moe_gate_model(num_experts_per_tok = None, n_routed_experts = None, layer_ids = None, workload_model = None):
+    global moe_gate_model
+    if moe_gate_model is None:
+        moe_gate_model = MoEGateModel(num_experts_per_tok, n_routed_experts, layer_ids, workload_model)
+    return moe_gate_model
+
+if __name__=="__main__":
+    for workload_model in ["uniform", "empirical_mmlu"]:
+        plt.figure()
+
+        layer = "layer0"
+
+        moe_gate = MoEGateModel(8, 256, [layer], workload_model)
+        moe_gate.new_iter(0, 32, 1000)
+
+        bincounts = [moe_gate.get_bincounts(layer, e) for e in range(256)]
+        
+        sorted_bins = np.sort(bincounts)
+
+        plt.bar(range(len(sorted_bins)), sorted_bins[::-1])
+        plt.savefig("out/moe_workload_{}.png".format(workload_model))

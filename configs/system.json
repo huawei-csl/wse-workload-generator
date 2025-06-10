@@ -1,0 +1,11 @@
+{
+    "num_nodes": 4,
+    "dp_attn": 2,
+    "dp_ffn": 1,
+    "tp_attn": 2,
+    "tp_ffn": 1,
+    "pp": 1,
+    "sp": 1,
+    "ep": 4,
+    "expert_workload_model": "empirical_mmlu"
+}

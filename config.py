@@ -1,26 +1,26 @@
 
+import json
+from copy import deepcopy
+
+
 class SystemConfig:
-    def __init__(self, rank, num_nodes, dp_attn=1, dp_ffn=1, tp_attn=1, tp_ffn=1, pp=1, sp=1, ep=1) -> None:
-        assert rank < num_nodes
-        assert num_nodes % dp_attn == 0 and num_nodes % dp_ffn == 0 and num_nodes % tp_attn == 0 and num_nodes % tp_ffn == 0 and num_nodes % pp == 0 and num_nodes % sp == 0 and num_nodes % ep == 0 
-        assert num_nodes == dp_attn * tp_attn * sp * pp, "Number of nodes is not equal to the parallelization factors for Attention blocks"
-        assert num_nodes == dp_ffn * tp_ffn * ep * pp, "Number of nodes is not equal to the parallelization factors for FFN blocks"
+    def __init__(self, fname) -> None:
+        self.load_from_json(fname)
 
-        self.rank = rank
-        self.num_nodes = num_nodes
-        self.dp_attn = dp_attn
-        self.dp_ffn = dp_ffn
-        self.tp_attn = tp_attn
-        self.tp_ffn = tp_ffn
-        self.pp = pp
-        self.sp = sp
-        self.ep = ep
+        for val in [self.dp_attn, self.dp_ffn, self.tp_attn, self.tp_ffn, self.pp, self.sp, self.ep]:
+            assert self.num_nodes % val == 0
+        assert self.num_nodes == self.dp_attn * self.tp_attn * self.sp * self.pp, "Number of nodes is not equal to the parallelization factors for Attention blocks"
+        assert self.num_nodes == self.dp_ffn * self.tp_ffn * self.ep * self.pp, "Number of nodes is not equal to the parallelization factors for FFN blocks"
 
-        self.get_ranks()
+        if self.ep > 1:
+            assert self.dp_ffn == 1, "If EP is used, do not use DP for FFN (can still use it for ATTN)"
         
-    def get_ranks(self):
+    def get_ranks(self, rank):                
+        assert rank < self.num_nodes
+
+        # ATTN ranks
         cluster_size = self.num_nodes
-        rank = self.rank
+        self.rank = rank 
 
         cluster_size = cluster_size // self.pp 
         self.rank_pp = rank // cluster_size
@@ -38,8 +38,7 @@ class SystemConfig:
         self.rank_sp = rank // cluster_size
         rank = rank % cluster_size
 
-        # print(rank_dp_attn, rank_pp, rank_tp_attn, rank_sp)
-
+        # FFN ranks
         cluster_size = self.num_nodes
         rank = self.rank
 
@@ -59,4 +58,16 @@ class SystemConfig:
         self.rank_ep = rank // cluster_size
         rank = rank % cluster_size
 
-        # print(rank_dp_ffn, rank_pp, rank_tp_ffn, rank_ep)
+    def load_from_json(self, fname):
+        with open(fname, "r") as f:
+            cfg = json.load(f)
+    
+        self.num_nodes = cfg["num_nodes"]
+        self.dp_attn = cfg["dp_attn"]
+        self.dp_ffn = cfg["dp_ffn"]
+        self.tp_attn = cfg["tp_attn"]
+        self.tp_ffn = cfg["tp_ffn"]
+        self.pp = cfg["pp"]
+        self.sp = cfg["sp"]
+        self.ep = cfg["ep"]
+        self.expert_workload_model = cfg["expert_workload_model"]
