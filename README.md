@@ -31,6 +31,10 @@ To run the simulation:
 python main.py --model_config configs/deepseekv3.json --system_config configs/system.json --bsz 1024 --prefill_len 2048 --decode_len 10 --only_decode 1 --simplified_decode 1 --dtype fp16
 ```
 
+The simulator will generate various system requirements (i.e., **# of flops, memory reads, network requirements**) for each node and for each inference step (prefill + decode) as csv files under **out/**
+
+The logs are written to **./out.log**
+
 For argument descriptions, run:
 ```
 python main.py --help
