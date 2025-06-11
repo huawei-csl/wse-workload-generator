@@ -4,8 +4,8 @@ from copy import deepcopy
 
 
 class SystemConfig:
-    def __init__(self, fname) -> None:
-        self.load_from_json(fname)
+    def __init__(self, fname, mode) -> None:
+        self.load_from_json(fname, mode)
 
         for val in [self.dp_attn, self.dp_ffn, self.tp_attn, self.tp_ffn, self.pp, self.sp, self.ep]:
             assert self.num_nodes % val == 0
@@ -58,9 +58,9 @@ class SystemConfig:
         self.rank_ep = rank // cluster_size
         rank = rank % cluster_size
 
-    def load_from_json(self, fname):
+    def load_from_json(self, fname, mode):
         with open(fname, "r") as f:
-            cfg = json.load(f)
+            cfg = json.load(f)[mode]
     
         self.num_nodes = cfg["num_nodes"]
         self.dp_attn = cfg["dp_attn"]

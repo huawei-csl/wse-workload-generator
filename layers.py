@@ -25,41 +25,81 @@ class Layer:
 class Linear(Layer):
     def __init__(self, uid, in_features, out_features, dtype) -> None:
         super().__init__()
-        logging.info("Linear layer {} with weight dims: {} x {}".format(uid, in_features, out_features))
+        logging.debug("Linear layer {} with weight dims: {} x {}".format(uid, in_features, out_features))
 
         self.uid = uid 
         self.in_features = in_features
         self.out_features = out_features
         self.dtype = dtype
 
-    def forward(self, bsz, seqlen=None, ctx_len=None, stats=None):
+    def forward(self, bsz, stats=None):
         memory_footprint = self.memory_footprint()
-        num_ops = self.num_ops(bsz, seqlen)
-        hbm_reads = self.hbm_reads(bsz)
-        network_data = self.network_data(bsz)
+        num_ops = self.num_ops(bsz)
+        hbm_reads = self.hbm_reads()
+        network_data = self.network_data()
 
-        logging.info("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
         stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
 
-    def memory_footprint(self, bsz=None, ctx_len=None):
+    def memory_footprint(self):
         memory_footprint =  self.in_features * self.out_features * dtype_to_byte(self.dtype)
         return memory_footprint # weights only, in bytes
     
-    def num_ops(self, bsz, seqlen, ctx_len=None):
-        n_ops = bsz * seqlen * self.in_features * self.out_features
+    def num_ops(self, bsz):
+        n_ops = bsz * self.in_features * self.out_features
         return n_ops # in terms of number of MACs
 
-    def hbm_reads(self, bsz=None, ctx_len=None):
+    def hbm_reads(self):
         rw = self.in_features * self.out_features * dtype_to_byte(self.dtype)
         return rw # weights only, in bytes
 
-    def network_data(self, bsz=None):
+    def network_data(self):
+        return 0
+
+'''
+Equivalent to n_groups Linear layers running in parallel. 
+For example: einsum(bshc,hcd->bshd), h is common in all terms, meaning the same computation is repeated for h times. Therefore, h: n_groups
+'''
+class GroupedLinear(Layer):
+    def __init__(self, uid, n_groups, in_features, out_features, dtype) -> None:
+        super().__init__()
+        logging.debug("GroupedLinear layer {} with n_groups: {} weight dims: {} x {}".format(uid, n_groups, in_features, out_features))
+
+        self.uid = uid 
+        self.n_groups = n_groups
+        self.in_features = in_features
+        self.out_features = out_features
+        self.dtype = dtype
+
+    def forward(self, bsz, stats=None):
+        memory_footprint = self.memory_footprint()
+        num_ops = self.num_ops(bsz)
+        hbm_reads = self.hbm_reads()
+        network_data = self.network_data()
+
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
+
+    def memory_footprint(self):
+        memory_footprint =  self.n_groups * self.in_features * self.out_features * dtype_to_byte(self.dtype)
+        return memory_footprint # weights only, in bytes
+    
+    def num_ops(self, bsz):
+        n_ops = self.n_groups * bsz * self.in_features * self.out_features
+        return n_ops # in terms of number of MACs
+
+    def hbm_reads(self):
+        rw = self.n_groups * self.in_features * self.out_features * dtype_to_byte(self.dtype)
+        return rw # weights only, in bytes
+
+    def network_data(self):
         return 0
     
+
 class SelfAttention(Layer):
     def __init__(self, uid, num_attention_heads, num_key_value_heads, head_dim, seq_parallel, dtype) -> None:
         super().__init__()
-        logging.info("SelfAttention layer {} with KV-cache dims: bsz x ctx_len x {} x {}".format(uid, num_key_value_heads, head_dim))
+        logging.debug("SelfAttention layer {} with KV-cache dims: bsz x ctx_len x {} x {}".format(uid, num_key_value_heads, head_dim))
 
         self.uid = uid
         self.num_attention_heads = num_attention_heads
@@ -74,7 +114,7 @@ class SelfAttention(Layer):
         hbm_reads = self.hbm_reads(bsz, ctx_len)
         network_data = self.network_data(bsz)
 
-        logging.info("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
         stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
 
     def memory_footprint(self, bsz, ctx_len):
@@ -105,64 +145,64 @@ class SelfAttention(Layer):
 class Allreduce(Layer):
     def __init__(self, uid, vector_size, dtype) -> None:
         super().__init__()
-        logging.info("Allreduce layer {} with vector size: {} ".format(uid, vector_size))
+        logging.debug("Allreduce layer {} with vector size: {} ".format(uid, vector_size))
 
         self.uid = uid
         self.vector_size = vector_size
         self.dtype = dtype
 
-    def forward(self, bsz, seqlen, ctx_len=None, stats=None):
+    def forward(self, bsz, stats=None):
         memory_footprint = self.memory_footprint()
         num_ops = self.num_ops()
         hbm_reads = self.hbm_reads()
-        network_data = self.network_data(bsz, seqlen)
+        network_data = self.network_data(bsz)
 
         stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
 
-    def memory_footprint(self, bsz=None, ctx_len=None):
+    def memory_footprint(self):
         return 0
 
-    def num_ops(self, bsz=None, ctx_len=None):
+    def num_ops(self):
         return 0
 
-    def hbm_reads(self, bsz=None, ctx_len=None):
+    def hbm_reads(self):
         return 0
     
-    def network_data(self, bsz, seqlen):
-        vecsize = 2 * bsz * seqlen * self.vector_size * dtype_to_byte(self.dtype) # 1 vec receive + 1 vec send
-        logging.info("{}: network data size (send + receive): {} B".format(self.uid, vecsize))
+    def network_data(self, bsz):
+        vecsize = 2 * bsz * self.vector_size * dtype_to_byte(self.dtype) # 1 vec receive + 1 vec send
+        logging.debug("{}: network data size (send + receive): {} B".format(self.uid, vecsize))
         return vecsize # in bytes
 
 class AlltoAll(Layer):
     def __init__(self, uid, vector_size, cluster_size, dtype) -> None:
         super().__init__()
-        logging.info("AlltoAll layer {} with vector size: {} among {} devices".format(uid, vector_size, cluster_size))
+        logging.debug("AlltoAll layer {} with vector size: {} among {} devices".format(uid, vector_size, cluster_size))
 
         self.uid = uid
         self.vector_size = vector_size
         self.cluster_size = cluster_size
         self.dtype = dtype
 
-    def forward(self, bsz, seqlen, ctx_len=None, stats=None):
+    def forward(self, bsz, stats=None):
         memory_footprint = self.memory_footprint()
         num_ops = self.num_ops()
         hbm_reads = self.hbm_reads()
-        network_data = self.network_data(bsz, seqlen)
+        network_data = self.network_data(bsz)
 
         stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
 
-    def memory_footprint(self, bsz=None, ctx_len=None):
+    def memory_footprint(self):
         return 0
 
-    def num_ops(self, bsz=None, ctx_len=None):
+    def num_ops(self):
         return 0
 
-    def hbm_reads(self, bsz=None, ctx_len=None):
+    def hbm_reads(self):
         return 0
     
-    def network_data(self, bsz, seqlen):
-        vecsize = 2 * bsz * seqlen * self.vector_size * self.cluster_size * dtype_to_byte(self.dtype) # N vec receive + N vec send, N: no. of devices in a cluster
-        logging.info("{}: network data size (send + receive): {} B".format(self.uid, vecsize))
+    def network_data(self, bsz):
+        vecsize = 2 * bsz * self.vector_size * self.cluster_size * dtype_to_byte(self.dtype) # N vec receive + N vec send, N: no. of devices in a cluster
+        logging.debug("{}: network data size (send + receive): {} B".format(self.uid, vecsize))
         return vecsize # in bytes
     
 class GQABlock(Layer):
@@ -196,8 +236,11 @@ class GQABlock(Layer):
 
     def forward(self, bsz, seqlen, ctx_len, stats):
         for opname in self.ops:
-            self.ops[opname].forward(bsz, seqlen, ctx_len, stats=stats)
-
+            if isinstance(self.ops[opname], SelfAttention):
+                self.ops[opname].forward(bsz, seqlen, ctx_len, stats=stats)
+            else:
+                self.ops[opname].forward(bsz*seqlen, stats=stats)
+                
     def memory_footprint(self, bsz, ctx_len):
         mem_size = sum([self.ops[opname].memory_footprint(bsz, ctx_len) for opname in self.ops])
         return mem_size # in bytes
@@ -220,7 +263,7 @@ class MLANaiveAttention(Layer):
         hbm_reads = self.hbm_reads(bsz, ctx_len)
         network_data = self.network_data(bsz)
 
-        logging.info("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
         stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
 
     def memory_footprint(self, bsz, ctx_len):
@@ -266,7 +309,7 @@ class MLAAbsorbAttention(Layer):
         hbm_reads = self.hbm_reads(bsz, ctx_len)
         network_data = self.network_data(bsz)
 
-        logging.info("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
         stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
 
     def memory_footprint(self, bsz, ctx_len):
@@ -297,7 +340,6 @@ class MLAAbsorbAttention(Layer):
     def network_data(self, bsz=None):
         return 0
     
-
 class MLANaiveBlock(Layer):
     def __init__(self, uid, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, system_config, dtype) -> None:
         super().__init__()
@@ -318,14 +360,49 @@ class MLANaiveBlock(Layer):
             self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dtype)
         
     def forward(self, bsz, seqlen, ctx_len, stats):
+        assert ctx_len == 0, "Naive block should be used only for prefill"
         for opname in self.ops:
-            self.ops[opname].forward(bsz, seqlen, ctx_len, stats=stats)
+            if isinstance(self.ops[opname], MLANaiveAttention):
+                self.ops[opname].forward(bsz, seqlen, ctx_len, stats=stats)
+            else:
+                self.ops[opname].forward(bsz*seqlen, stats=stats)
 
     def memory_footprint(self, bsz, ctx_len):
         mem_size = sum([self.ops[opname].memory_footprint(bsz, ctx_len) for opname in self.ops])
         return mem_size # in bytes
 
 
+class MLAAbsorbBlock(Layer):
+    def __init__(self, uid, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, system_config, dtype) -> None:
+        super().__init__()
+        logging.info("Creating MLA naive layer {}".format(uid))
+
+        n_local_heads = intceil(n_heads / system_config.tp_attn)
+
+        qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
+
+        self.ops = {}
+        self.ops["wq_a"] = Linear(uid+"_wqa", hidden_size, q_lora_rank, dtype)
+        self.ops["wq_b"] = Linear(uid+"_wqb", q_lora_rank, n_local_heads*qk_head_dim, dtype)
+        self.ops["wkv_a"] = Linear(uid+"_wkva", hidden_size, kv_lora_rank+qk_rope_head_dim, dtype)
+        self.ops["wkv_b1"] = GroupedLinear(uid+"_wkvb1", n_local_heads, qk_nope_head_dim, kv_lora_rank, dtype)
+        self.ops["absorb_attn"] = MLAAbsorbAttention(uid+"_absorbattn", n_local_heads, kv_lora_rank, qk_rope_head_dim, system_config.sp, dtype)
+        self.ops["wkv_b2"] = GroupedLinear(uid+"_wkvb2", n_local_heads, kv_lora_rank, v_head_dim, dtype)
+        self.ops["wo"] = Linear(uid+"_wo", n_local_heads*v_head_dim, hidden_size, dtype)
+        if system_config.tp_attn > 1:
+            self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dtype)
+        
+    def forward(self, bsz, seqlen, ctx_len, stats):
+        assert seqlen == 1, "Absorb block should be used only for decode"
+        for opname in self.ops:
+            if isinstance(self.ops[opname], MLAAbsorbAttention):
+                self.ops[opname].forward(bsz, seqlen, ctx_len, stats=stats)
+            else:
+                self.ops[opname].forward(bsz*seqlen, stats=stats)
+
+    def memory_footprint(self, bsz, ctx_len):
+        mem_size = sum([self.ops[opname].memory_footprint(bsz, ctx_len) for opname in self.ops])
+        return mem_size # in bytes
 
 class MLABlock(Layer):
     def __init__(self, uid, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, system_config, dtype) -> None:
@@ -336,9 +413,15 @@ class MLABlock(Layer):
         self.system_config = system_config
 
         self.MLA_naive = MLANaiveBlock(uid+"_naive", hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, system_config, dtype)
+        self.MLA_absorb = MLAAbsorbBlock(uid+"_absorb", hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, system_config, dtype)
 
     def forward(self, bsz, seqlen, ctx_len, stats):
-        self.MLA_naive.forward(bsz, seqlen, ctx_len, stats)
+        is_prefill = ctx_len == 0
+
+        if is_prefill:
+            self.MLA_naive.forward(bsz, seqlen, ctx_len, stats)
+        else:
+            self.MLA_absorb.forward(bsz, seqlen, ctx_len, stats)
 
     def memory_footprint(self, bsz, ctx_len):
         mem_size = self.MLA_naive.memory_footprint(bsz, ctx_len)
@@ -362,26 +445,13 @@ class FFN(Layer):
         if system_config.tp_ffn > 1:
             self.ops["allreduce"] = Allreduce(uid+"_ar", hidden_size, dtype)
 
-    def forward(self, bsz, seqlen, ctx_len=None, stats=None):
+    def forward(self, bsz, stats=None):
         for opname in self.ops:
-            self.ops[opname].forward(bsz, seqlen, ctx_len, stats=stats)
+            self.ops[opname].forward(bsz, stats=stats)
 
     def memory_footprint(self, bsz, ctx_len=None):
         mem_size = sum([self.ops[opname].memory_footprint(bsz) for opname in self.ops])
         return mem_size # in bytes
-
-    def num_ops(self, bsz=None):
-        n_ops = sum([self.ops[opname].num_ops(bsz) for opname in self.ops])
-        return n_ops # in terms of number of MACs
-    
-    def hbm_reads(self):
-        rw = sum([self.ops[opname].hbm_reads() for opname in self.ops])
-        return rw # in bytes
-
-    def network_data(self, bsz):
-        vecsize = sum([self.ops[opname].network_data(bsz) for opname in self.ops])
-        return vecsize # in bytes
-
 
 class MoE(Layer):
     def __init__(self, uid, hidden_size, moe_intermediate_size, num_experts_per_tok, n_experts, n_shared_experts, system_config, dtype) -> None:
@@ -410,22 +480,26 @@ class MoE(Layer):
         self.shared_expert = FFN(uid+"_shared_exp", hidden_size, intermediate_size, system_config, dtype)
 
     ## TODO: Do we really need a global all-to-all communication for both dispatch and combine?
-    def forward(self, bsz, seqlen, ctx_len, stats):
-        self.a2a_dispatch.forward(bsz, seqlen=seqlen, stats=stats)
+    def forward(self, bsz, stats):
+        if self.system_config.ep > 1:
+            self.a2a_dispatch.forward(bsz, stats=stats)
 
         for e in self.experts:
             bsz_for_expert_i = get_moe_gate_model().get_bincounts(layer_id=self.uid, expert_id=e)
-            logging.info("expert {} num of routed samples: {}".format(e, bsz_for_expert_i))
+            logging.debug("expert {} num of routed samples: {}".format(e, bsz_for_expert_i))
             if bsz_for_expert_i > 0:
-                self.experts[e].forward(bsz_for_expert_i, seqlen=1, stats=stats)
-        self.shared_expert.forward(bsz*seqlen, seqlen=1, stats=stats)
+                self.experts[e].forward(bsz_for_expert_i, stats=stats)
+        self.shared_expert.forward(bsz, stats=stats)
         
-        self.a2a_combine.forward(bsz, seqlen=seqlen, stats=stats)
+        if self.system_config.ep > 1:
+            self.a2a_combine.forward(bsz, stats=stats)
 
 class LlamaDecodeLayer(Layer):
     def __init__(self, layer_id, hidden_size, num_attention_heads, num_key_value_heads, intermediate_size, system_config, dtype) -> None:
         super().__init__()
         logging.info("Creating Decode layer {}".format(layer_id))
+
+        self.system_config = system_config
 
         self.attention = GQABlock(layer_id+"_attn", hidden_size, num_attention_heads, num_key_value_heads, system_config, dtype)
         self.ffn = FFN(layer_id+"_ffn", hidden_size, intermediate_size, system_config, dtype)
@@ -435,7 +509,8 @@ class LlamaDecodeLayer(Layer):
         self.attention.forward(bsz_per_device_attn, seqlen, ctx_len, stats=stats)
 
         bsz_per_device_ffn = intceil(bsz/self.system_config.dp_ffn)
-        self.ffn.forward(bsz_per_device_ffn, seqlen, ctx_len, stats=stats)
+        seqlen_per_device_ffn = intceil(seqlen/self.system_config.sp) # This is only effective in prefill, seqlen=1 in decode anyway
+        self.ffn.forward(bsz_per_device_ffn*seqlen_per_device_ffn, stats=stats)
 
     def memory_footprint(self, bsz, ctx_len):
         bsz_per_device_attn = intceil(bsz/self.system_config.dp_attn)
@@ -462,11 +537,16 @@ class DSv3DecodeLayer(Layer):
             self.ffn = FFN(layer_id+"_ffn", hidden_size, intermediate_size, system_config, dtype)
 
     def forward(self, bsz, seqlen, ctx_len, stats):
+        is_prefill = ctx_len == 0
+        if not is_prefill:
+            assert seqlen == 1
+            
         bsz_per_device_attn = intceil(bsz/self.system_config.dp_attn)
         self.attention.forward(bsz_per_device_attn, seqlen, ctx_len, stats=stats)
 
         bsz_per_device_ffn = intceil(bsz/self.system_config.dp_ffn)
-        self.ffn.forward(bsz_per_device_ffn, seqlen, ctx_len, stats=stats)
+        seqlen_per_device_ffn = intceil(seqlen/self.system_config.sp) # This is only effective in prefill, seqlen=1 in decode anyway
+        self.ffn.forward(bsz_per_device_ffn*seqlen_per_device_ffn, stats=stats)
 
     def memory_footprint(self, bsz, ctx_len):
         bsz_per_device_attn = intceil(bsz/self.system_config.dp_attn)
@@ -485,17 +565,9 @@ class LMHead(Layer):
         vocab_size_per_device = intceil(vocab_size/system_config.num_nodes)
         self.head = Linear(uid=layer_id+"_head", in_features=hidden_size, out_features=vocab_size_per_device, dtype=dtype)
 
-    def forward(self, bsz, seqlen, ctx_len, stats):
-        self.head.forward(bsz, seqlen, ctx_len, stats=stats)
+    def forward(self, bsz, stats):
+        self.head.forward(bsz, stats=stats)
 
-    def memory_footprint(self, bsz, ctx_len):
-        mem_size = self.head.memory_footprint(bsz, ctx_len)
+    def memory_footprint(self):
+        mem_size = self.head.memory_footprint()
         return mem_size # in bytes
-    
-    def num_ops(self, bsz=None, ctx_len=None):
-        n_ops = self.head.num_ops(bsz, ctx_len)
-        return n_ops # in terms of number of MACs
-
-    def hbm_reads(self, bsz=None, ctx_len=None):
-        rw = self.head.hbm_reads(bsz, ctx_len)
-        return rw # in bytes

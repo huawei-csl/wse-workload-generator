@@ -39,3 +39,7 @@ For argument descriptions, run:
 ```
 python main.py --help
 ```
+
+TODO: 
+1) Show ranks in CC operations
+2) intceil for intermediate_size with TP
