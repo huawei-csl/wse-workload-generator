@@ -40,6 +40,12 @@ For argument descriptions, run:
 python main.py --help
 ```
 
-TODO: 
-1) Show ranks in CC operations
-2) intceil for intermediate_size with TP
+
+Run sanity checks, which perform decode for various parallelization strategies and check if the results are expected or not:
+```
+py.test
+```
+
+
+
+TODOs: 

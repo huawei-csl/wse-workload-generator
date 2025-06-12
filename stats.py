@@ -14,8 +14,8 @@ class RuntimeStats:
         self.iter = iter_id
         self.stats[self.iter] = {}
         
-    def append(self, uid, memory_footprint, num_ops, hbm_reads, network_data):
-        self.stats[self.iter][uid] = {"memory_footprint": memory_footprint, "num_ops": num_ops, "hbm_reads": hbm_reads, "network_data": network_data}
+    def append(self, uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group):
+        self.stats[self.iter][uid] = {"memory_footprint": memory_footprint, "num_ops": num_ops, "hbm_reads": hbm_reads, "network_data": network_data, "comm_group": "N/A" if comm_group is None else comm_group}
 
     def sumUp(self):
         memory_footprint = sum([self.stats[self.iter][uid]["memory_footprint"] for uid in self.stats[self.iter]])
@@ -29,9 +29,9 @@ class RuntimeStats:
             os.makedirs(os.path.dirname(fname))
             
         with open(fname, "w") as f:
-            fieldnames = ["uid", "memory_footprint", "num_ops", "hbm_reads", "network_data"]
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writerows([{"uid":"uid", "memory_footprint":"memory_footprint (B)", "num_ops":"num_ops (MAC)", "hbm_reads":"hbm_reads (B)", "network_data":"network_data (B)"}])
+            fieldnames = ["uid", "memory_footprint", "num_ops", "hbm_reads", "network_data", "comm_group"]
+            writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")
+            writer.writerows([{"uid":"uid", "memory_footprint":"memory_footprint (B)", "num_ops":"num_ops (MAC)", "hbm_reads":"hbm_reads (B)", "network_data":"network_data (B)", "comm_group":"comm. group"}])
             writer.writerows([{"uid": uid} | self.stats[self.iter][uid] for uid in self.stats[self.iter]])
 
     def summarize(self):
@@ -43,3 +43,5 @@ class RuntimeStats:
         logging.info("hbm_reads: {}".format(byte_to_str(hbm_reads)))
         logging.info("network_data: {}".format(byte_to_str(network_data)))
         logging.info("--------- End of Summary -----------")
+
+        return memory_footprint, num_ops, hbm_reads, network_data

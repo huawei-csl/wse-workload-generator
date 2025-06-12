@@ -39,7 +39,7 @@ class Linear(Layer):
         network_data = self.network_data()
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None)
 
     def memory_footprint(self):
         memory_footprint =  self.in_features * self.out_features * dtype_to_byte(self.dtype)
@@ -78,7 +78,7 @@ class GroupedLinear(Layer):
         network_data = self.network_data()
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None)
 
     def memory_footprint(self):
         memory_footprint =  self.n_groups * self.in_features * self.out_features * dtype_to_byte(self.dtype)
@@ -115,7 +115,7 @@ class SelfAttention(Layer):
         network_data = self.network_data(bsz)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None)
 
     def memory_footprint(self, bsz, ctx_len):
         memory_footprint = 2 * bsz * intceil(ctx_len/self.seq_parallel) * self.num_key_value_heads * self.head_dim * dtype_to_byte(self.dtype) # KV-cache
@@ -143,13 +143,14 @@ class SelfAttention(Layer):
         return 0
 
 class Allreduce(Layer):
-    def __init__(self, uid, vector_size, dtype) -> None:
+    def __init__(self, uid, vector_size, comm_group, dtype) -> None:
         super().__init__()
         logging.debug("Allreduce layer {} with vector size: {} ".format(uid, vector_size))
 
         self.uid = uid
         self.vector_size = vector_size
         self.dtype = dtype
+        self.comm_group = comm_group
 
     def forward(self, bsz, stats=None):
         memory_footprint = self.memory_footprint()
@@ -157,7 +158,7 @@ class Allreduce(Layer):
         hbm_reads = self.hbm_reads()
         network_data = self.network_data(bsz)
 
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group)
 
     def memory_footprint(self):
         return 0
@@ -182,6 +183,7 @@ class AlltoAll(Layer):
         self.vector_size = vector_size
         self.cluster_size = cluster_size
         self.dtype = dtype
+        self.comm_group = list(range(cluster_size))
 
     def forward(self, bsz, stats=None):
         memory_footprint = self.memory_footprint()
@@ -189,7 +191,7 @@ class AlltoAll(Layer):
         hbm_reads = self.hbm_reads()
         network_data = self.network_data(bsz)
 
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group)
 
     def memory_footprint(self):
         return 0
@@ -206,17 +208,17 @@ class AlltoAll(Layer):
         return vecsize # in bytes
     
 class GQABlock(Layer):
-    def __init__(self, uid, hidden_size, num_attention_heads, num_key_value_heads, system_config, dtype) -> None:
+    def __init__(self, uid, hidden_size, num_attention_heads, num_key_value_heads, dist_info, dtype) -> None:
         super().__init__()
         logging.info("Creating GQA block {}".format(uid))
 
         assert hidden_size % num_attention_heads == 0
         head_dim = hidden_size // num_attention_heads
 
-        self.system_config = system_config
+        self.dist_info = dist_info
 
-        num_heads_per_device = intceil(num_attention_heads / system_config.tp_attn)
-        num_kv_heads_per_device = intceil(num_key_value_heads / system_config.tp_attn)
+        num_heads_per_device = intceil(num_attention_heads / dist_info.tp_attn)
+        num_kv_heads_per_device = intceil(num_key_value_heads / dist_info.tp_attn)
 
         self.uid = uid
 
@@ -225,14 +227,14 @@ class GQABlock(Layer):
         self.ops["k_proj"] = Linear(uid+"_kproj", hidden_size, num_kv_heads_per_device * head_dim, dtype)
         self.ops["v_proj"] = Linear(uid+"_vproj", hidden_size, num_kv_heads_per_device * head_dim, dtype)
 
-        self.ops["self_attn"] = SelfAttention(uid+"_selfattn", num_heads_per_device, num_kv_heads_per_device, head_dim, system_config.sp, dtype)
-        if system_config.sp > 1:
-            self.ops["allreduce_sp"] = Allreduce(uid+"_ar_sp", num_heads_per_device*head_dim, dtype)
+        self.ops["self_attn"] = SelfAttention(uid+"_selfattn", num_heads_per_device, num_kv_heads_per_device, head_dim, dist_info.sp, dtype)
+        if dist_info.sp > 1:
+            self.ops["allreduce_sp"] = Allreduce(uid+"_ar_sp", num_heads_per_device * head_dim, dist_info.attn_comm_groups["sp"], dtype)
 
         self.ops["o_proj"] = Linear(uid+"_oproj", num_heads_per_device * head_dim, hidden_size, dtype)
 
-        if system_config.tp_attn > 1:
-            self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dtype)
+        if dist_info.tp_attn > 1:
+            self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
 
     def forward(self, bsz, seqlen, ctx_len, stats):
         for opname in self.ops:
@@ -264,7 +266,7 @@ class MLANaiveAttention(Layer):
         network_data = self.network_data(bsz)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None)
 
     def memory_footprint(self, bsz, ctx_len):
         memory_footprint = bsz * intceil(ctx_len/self.seq_parallel) * self.n_local_heads * self.qk_head_dim * dtype_to_byte(self.dtype) # k_cache
@@ -310,7 +312,7 @@ class MLAAbsorbAttention(Layer):
         network_data = self.network_data(bsz)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data)
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None)
 
     def memory_footprint(self, bsz, ctx_len):
         memory_footprint = bsz * intceil(ctx_len/self.seq_parallel) * self.kv_lora_rank * dtype_to_byte(self.dtype) # kv_cache
@@ -341,11 +343,11 @@ class MLAAbsorbAttention(Layer):
         return 0
     
 class MLANaiveBlock(Layer):
-    def __init__(self, uid, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, system_config, dtype) -> None:
+    def __init__(self, uid, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, dist_info, dtype) -> None:
         super().__init__()
         logging.info("Creating MLA naive layer {}".format(uid))
 
-        n_local_heads = intceil(n_heads / system_config.tp_attn)
+        n_local_heads = intceil(n_heads / dist_info.tp_attn)
 
         qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
 
@@ -354,10 +356,14 @@ class MLANaiveBlock(Layer):
         self.ops["wq_b"] = Linear(uid+"_wqb", q_lora_rank, n_local_heads*qk_head_dim, dtype)
         self.ops["wkv_a"] = Linear(uid+"_wkva", hidden_size, kv_lora_rank+qk_rope_head_dim, dtype)
         self.ops["wkv_b"] = Linear(uid+"_wkvb", kv_lora_rank, n_local_heads*(qk_nope_head_dim + v_head_dim), dtype)
-        self.ops["naive_attn"] = MLANaiveAttention(uid+"_naiveattn", n_local_heads, qk_head_dim, v_head_dim, system_config.sp, dtype)
+
+        self.ops["naive_attn"] = MLANaiveAttention(uid+"_naiveattn", n_local_heads, qk_head_dim, v_head_dim, dist_info.sp, dtype)
+        if dist_info.sp > 1:
+            self.ops["allreduce_sp"] = Allreduce(uid+"_ar_sp", n_local_heads * v_head_dim, dist_info.attn_comm_groups["sp"], dtype)
+
         self.ops["wo"] = Linear(uid+"_wo", n_local_heads*v_head_dim, hidden_size, dtype)
-        if system_config.tp_attn > 1:
-            self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dtype)
+        if dist_info.tp_attn > 1:
+            self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
         
     def forward(self, bsz, seqlen, ctx_len, stats):
         assert ctx_len == 0, "Naive block should be used only for prefill"
@@ -373,11 +379,11 @@ class MLANaiveBlock(Layer):
 
 
 class MLAAbsorbBlock(Layer):
-    def __init__(self, uid, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, system_config, dtype) -> None:
+    def __init__(self, uid, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, dist_info, dtype) -> None:
         super().__init__()
         logging.info("Creating MLA naive layer {}".format(uid))
 
-        n_local_heads = intceil(n_heads / system_config.tp_attn)
+        n_local_heads = intceil(n_heads / dist_info.tp_attn)
 
         qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
 
@@ -386,11 +392,14 @@ class MLAAbsorbBlock(Layer):
         self.ops["wq_b"] = Linear(uid+"_wqb", q_lora_rank, n_local_heads*qk_head_dim, dtype)
         self.ops["wkv_a"] = Linear(uid+"_wkva", hidden_size, kv_lora_rank+qk_rope_head_dim, dtype)
         self.ops["wkv_b1"] = GroupedLinear(uid+"_wkvb1", n_local_heads, qk_nope_head_dim, kv_lora_rank, dtype)
-        self.ops["absorb_attn"] = MLAAbsorbAttention(uid+"_absorbattn", n_local_heads, kv_lora_rank, qk_rope_head_dim, system_config.sp, dtype)
+        self.ops["absorb_attn"] = MLAAbsorbAttention(uid+"_absorbattn", n_local_heads, kv_lora_rank, qk_rope_head_dim, dist_info.sp, dtype)
+        if dist_info.sp > 1:
+            self.ops["allreduce_sp"] = Allreduce(uid+"_ar_sp", n_local_heads * qk_rope_head_dim, dist_info.attn_comm_groups["sp"], dtype)
+        
         self.ops["wkv_b2"] = GroupedLinear(uid+"_wkvb2", n_local_heads, kv_lora_rank, v_head_dim, dtype)
         self.ops["wo"] = Linear(uid+"_wo", n_local_heads*v_head_dim, hidden_size, dtype)
-        if system_config.tp_attn > 1:
-            self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dtype)
+        if dist_info.tp_attn > 1:
+            self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
         
     def forward(self, bsz, seqlen, ctx_len, stats):
         assert seqlen == 1, "Absorb block should be used only for decode"
@@ -405,15 +414,15 @@ class MLAAbsorbBlock(Layer):
         return mem_size # in bytes
 
 class MLABlock(Layer):
-    def __init__(self, uid, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, system_config, dtype) -> None:
+    def __init__(self, uid, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, dist_info, dtype) -> None:
         super().__init__()
         logging.info("Creating MLA block {}".format(uid))
 
         self.uid = uid
-        self.system_config = system_config
+        self.dist_info = dist_info
 
-        self.MLA_naive = MLANaiveBlock(uid+"_naive", hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, system_config, dtype)
-        self.MLA_absorb = MLAAbsorbBlock(uid+"_absorb", hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, system_config, dtype)
+        self.MLA_naive = MLANaiveBlock(uid+"_naive", hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, dist_info, dtype)
+        self.MLA_absorb = MLAAbsorbBlock(uid+"_absorb", hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, dist_info, dtype)
 
     def forward(self, bsz, seqlen, ctx_len, stats):
         is_prefill = ctx_len == 0
@@ -428,22 +437,21 @@ class MLABlock(Layer):
         return mem_size # in bytes
      
 class FFN(Layer):
-    def __init__(self, uid, hidden_size, intermediate_size, system_config, dtype) -> None:
+    def __init__(self, uid, hidden_size, intermediate_size, dist_info, dtype) -> None:
         super().__init__()
         logging.info("Creating FFN layer {}".format(uid))
         self.uid = uid
 
-        self.system_config = system_config
-        assert intermediate_size % system_config.tp_ffn == 0
-        inter_size_per_node = intceil(intermediate_size/system_config.tp_ffn) 
+        self.dist_info = dist_info
+        inter_size_per_node = intceil(intermediate_size/dist_info.tp_ffn) 
 
         self.ops = {}
         self.ops["up"] = Linear(uid+"_up", hidden_size, inter_size_per_node, dtype)
         self.ops["gate"] = Linear(uid+"_gate", hidden_size, inter_size_per_node, dtype)
         self.ops["down"] = Linear(uid+"_down", inter_size_per_node, hidden_size, dtype)
         
-        if system_config.tp_ffn > 1:
-            self.ops["allreduce"] = Allreduce(uid+"_ar", hidden_size, dtype)
+        if dist_info.tp_ffn > 1:
+            self.ops["allreduce"] = Allreduce(uid+"_ar", hidden_size, dist_info.ffn_comm_groups["tp_ffn"], dtype)
 
     def forward(self, bsz, stats=None):
         for opname in self.ops:
@@ -453,8 +461,37 @@ class FFN(Layer):
         mem_size = sum([self.ops[opname].memory_footprint(bsz) for opname in self.ops])
         return mem_size # in bytes
 
+
+'''
+Same as FFN but assumes TP=EP
+'''
+class Dense(Layer):
+    def __init__(self, uid, hidden_size, intermediate_size, dist_info, dtype) -> None:
+        super().__init__()
+        logging.info("Creating Dense layer {}".format(uid))
+        self.uid = uid
+
+        self.dist_info = dist_info
+        inter_size_per_node = intceil(intermediate_size/dist_info.ep) 
+
+        self.ops = {}
+        self.ops["up"] = Linear(uid+"_up", hidden_size, inter_size_per_node, dtype)
+        self.ops["gate"] = Linear(uid+"_gate", hidden_size, inter_size_per_node, dtype)
+        self.ops["down"] = Linear(uid+"_down", inter_size_per_node, hidden_size, dtype)
+        
+        if dist_info.ep > 1:
+            self.ops["allreduce"] = Allreduce(uid+"_ar", hidden_size, dist_info.ffn_comm_groups["ep"], dtype)
+
+    def forward(self, bsz, stats=None):
+        for opname in self.ops:
+            self.ops[opname].forward(bsz, stats=stats)
+
+    def memory_footprint(self, bsz, ctx_len=None):
+        mem_size = sum([self.ops[opname].memory_footprint(bsz) for opname in self.ops])
+        return mem_size # in bytes
+    
 class MoE(Layer):
-    def __init__(self, uid, hidden_size, moe_intermediate_size, num_experts_per_tok, n_experts, n_shared_experts, system_config, dtype) -> None:
+    def __init__(self, uid, hidden_size, moe_intermediate_size, num_experts_per_tok, n_experts, n_shared_experts, dist_info, dtype) -> None:
         super().__init__()
         logging.info("Creating MoE layer {}".format(uid))
         self.uid = uid
@@ -462,26 +499,26 @@ class MoE(Layer):
         self.num_experts_per_tok = num_experts_per_tok
         self.n_experts = n_experts
         self.n_shared_experts = n_shared_experts
-        self.system_config = system_config
+        self.dist_info = dist_info
 
-        if self.system_config.ep > 1:
-            self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, self.system_config.num_nodes, dtype)
-            self.a2a_combine = AlltoAll(uid+"_a2a_comb", hidden_size, self.system_config.num_nodes, dtype)
+        if self.dist_info.ep > 1:
+            self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, self.dist_info.num_nodes, dtype)
+            self.a2a_combine = AlltoAll(uid+"_a2a_comb", hidden_size, self.dist_info.num_nodes, dtype)
 
-        rank_ep = system_config.rank_ep
-        assert n_experts % system_config.ep == 0
-        n_experts_per_device = n_experts // system_config.ep
+        rank_ep = dist_info.rank_ep
+        assert n_experts % dist_info.ep == 0
+        n_experts_per_device = n_experts // dist_info.ep
 
         self.experts = {}
         for i in range(rank_ep*n_experts_per_device, (rank_ep+1)*n_experts_per_device):
-            self.experts[i] = FFN(uid+"_exp_"+str(i), hidden_size, moe_intermediate_size, system_config, dtype)
+            self.experts[i] = FFN(uid+"_exp_"+str(i), hidden_size, moe_intermediate_size, dist_info, dtype)
         
         intermediate_size = moe_intermediate_size * n_shared_experts
-        self.shared_expert = FFN(uid+"_shared_exp", hidden_size, intermediate_size, system_config, dtype)
+        self.shared_expert = FFN(uid+"_shared_exp", hidden_size, intermediate_size, dist_info, dtype)
 
     ## TODO: Do we really need a global all-to-all communication for both dispatch and combine?
     def forward(self, bsz, stats):
-        if self.system_config.ep > 1:
+        if self.dist_info.ep > 1:
             self.a2a_dispatch.forward(bsz, stats=stats)
 
         for e in self.experts:
@@ -489,80 +526,83 @@ class MoE(Layer):
             logging.debug("expert {} num of routed samples: {}".format(e, bsz_for_expert_i))
             if bsz_for_expert_i > 0:
                 self.experts[e].forward(bsz_for_expert_i, stats=stats)
-        self.shared_expert.forward(bsz, stats=stats)
         
-        if self.system_config.ep > 1:
+        ## TODO: At the moment, only a single device processes the shared expert. Consider other strategies.
+        if self.dist_info.rank_ep == 0:
+            self.shared_expert.forward(bsz, stats=stats)
+
+        if self.dist_info.ep > 1:
             self.a2a_combine.forward(bsz, stats=stats)
 
 class LlamaDecodeLayer(Layer):
-    def __init__(self, layer_id, hidden_size, num_attention_heads, num_key_value_heads, intermediate_size, system_config, dtype) -> None:
+    def __init__(self, layer_id, hidden_size, num_attention_heads, num_key_value_heads, intermediate_size, dist_info, dtype) -> None:
         super().__init__()
         logging.info("Creating Decode layer {}".format(layer_id))
 
-        self.system_config = system_config
+        self.dist_info = dist_info
 
-        self.attention = GQABlock(layer_id+"_attn", hidden_size, num_attention_heads, num_key_value_heads, system_config, dtype)
-        self.ffn = FFN(layer_id+"_ffn", hidden_size, intermediate_size, system_config, dtype)
+        self.attention = GQABlock(layer_id+"_attn", hidden_size, num_attention_heads, num_key_value_heads, dist_info, dtype)
+        self.ffn = FFN(layer_id+"_ffn", hidden_size, intermediate_size, dist_info, dtype)
 
     def forward(self, bsz, seqlen, ctx_len, stats):
-        bsz_per_device_attn = intceil(bsz/self.system_config.dp_attn)
+        bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
         self.attention.forward(bsz_per_device_attn, seqlen, ctx_len, stats=stats)
 
-        bsz_per_device_ffn = intceil(bsz/self.system_config.dp_ffn)
-        seqlen_per_device_ffn = intceil(seqlen/self.system_config.sp) # This is only effective in prefill, seqlen=1 in decode anyway
+        bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
+        seqlen_per_device_ffn = intceil(seqlen/self.dist_info.sp) # This is only effective in prefill, seqlen=1 in decode anyway
         self.ffn.forward(bsz_per_device_ffn*seqlen_per_device_ffn, stats=stats)
 
     def memory_footprint(self, bsz, ctx_len):
-        bsz_per_device_attn = intceil(bsz/self.system_config.dp_attn)
+        bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
         mem_size = self.attention.memory_footprint(bsz_per_device_attn, ctx_len)
 
-        bsz_per_device_ffn = intceil(bsz/self.system_config.dp_ffn)
+        bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
         mem_size += self.ffn.memory_footprint(bsz_per_device_ffn)
 
         return mem_size # in bytes
 
 
 class DSv3DecodeLayer(Layer):
-    def __init__(self, layer_id, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, intermediate_size, num_experts_per_tok, n_experts, n_shared_experts, system_config, dtype, is_moe=False) -> None:
+    def __init__(self, layer_id, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, intermediate_size, num_experts_per_tok, n_experts, n_shared_experts, dist_info, dtype, is_moe=False) -> None:
         super().__init__()
         logging.info("Creating Decode layer {}".format(layer_id))
 
-        self.system_config = system_config
+        self.dist_info = dist_info
 
-        self.attention = MLABlock(layer_id+"_attn", hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, system_config, dtype)
+        self.attention = MLABlock(layer_id+"_attn", hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, dist_info, dtype)
 
         if is_moe:
-            self.ffn = MoE(layer_id+"_moe", hidden_size, intermediate_size, num_experts_per_tok, n_experts, n_shared_experts, system_config, dtype)
+            self.ffn = MoE(layer_id+"_moe", hidden_size, intermediate_size, num_experts_per_tok, n_experts, n_shared_experts, dist_info, dtype)
         else:
-            self.ffn = FFN(layer_id+"_ffn", hidden_size, intermediate_size, system_config, dtype)
+            self.ffn = Dense(layer_id+"_dense", hidden_size, intermediate_size, dist_info, dtype)
 
     def forward(self, bsz, seqlen, ctx_len, stats):
         is_prefill = ctx_len == 0
         if not is_prefill:
             assert seqlen == 1
             
-        bsz_per_device_attn = intceil(bsz/self.system_config.dp_attn)
+        bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
         self.attention.forward(bsz_per_device_attn, seqlen, ctx_len, stats=stats)
 
-        bsz_per_device_ffn = intceil(bsz/self.system_config.dp_ffn)
-        seqlen_per_device_ffn = intceil(seqlen/self.system_config.sp) # This is only effective in prefill, seqlen=1 in decode anyway
+        bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
+        seqlen_per_device_ffn = intceil(seqlen/self.dist_info.sp) # This is only effective in prefill, seqlen=1 in decode anyway
         self.ffn.forward(bsz_per_device_ffn*seqlen_per_device_ffn, stats=stats)
 
     def memory_footprint(self, bsz, ctx_len):
-        bsz_per_device_attn = intceil(bsz/self.system_config.dp_attn)
+        bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
         mem_size = self.attention.memory_footprint(bsz_per_device_attn, ctx_len)
 
-        bsz_per_device_ffn = intceil(bsz/self.system_config.dp_ffn)
+        bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
         mem_size += self.ffn.memory_footprint(bsz_per_device_ffn)
 
         return mem_size # in bytes
 
 class LMHead(Layer):
-    def __init__(self, layer_id, hidden_size, vocab_size, system_config, dtype) -> None:
+    def __init__(self, layer_id, hidden_size, vocab_size, dist_info, dtype) -> None:
         super().__init__()
         logging.info("Creating LMHead layer {}".format(layer_id))
 
-        vocab_size_per_device = intceil(vocab_size/system_config.num_nodes)
+        vocab_size_per_device = intceil(vocab_size/dist_info.num_nodes)
         self.head = Linear(uid=layer_id+"_head", in_features=hidden_size, out_features=vocab_size_per_device, dtype=dtype)
 
     def forward(self, bsz, stats):

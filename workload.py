@@ -57,6 +57,16 @@ def get_moe_gate_model(num_experts_per_tok = None, n_routed_experts = None, laye
     return moe_gate_model
 
 if __name__=="__main__":
+    layer = "layer0"
+    moe_gate = MoEGateModel(8, 256, [layer], workload_model="uniform")
+    moe_gate.new_iter(0, 16, 64)
+    bincounts = [moe_gate.get_bincounts(layer, e) for e in range(256)]
+
+    for i in range(100):
+        print(sum(bincounts))
+
+    exit()
+
     for workload_model in ["uniform", "empirical_mmlu"]:
         plt.figure()
 

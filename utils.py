@@ -36,5 +36,22 @@ def mac_to_str(macs):
 def intceil(val):
     return int(math.ceil(val))
 
+def divide_equal(val, n_div):
+    smallest = val // n_div
+    remainder = val - n_div * smallest
+
+    parts = []
+    for i in range(n_div):
+        if i < remainder:
+            parts.append(smallest+1)
+        else:
+            parts.append(smallest)
+
+    return parts
+
 def colored_text(txt, color=None):
     return  '\033[92m' + str(txt) + '\033[0m'
+
+if __name__=="__main__":
+    parts = divide_equal(63, 4)
+    print(parts)

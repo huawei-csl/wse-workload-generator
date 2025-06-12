@@ -3,13 +3,14 @@
 from layers import LlamaDecodeLayer, DSv3DecodeLayer, LMHead
 import logging 
 from stats import RuntimeStats
-from utils import intceil 
+from utils import intceil, divide_equal
 from workload import get_moe_gate_model
 
 class Model:
-    def __init__(self, model_config, system_config, dtype) -> None:
+    def __init__(self, model_config, dist_info, dtype, out_dir) -> None:
         self.stats = RuntimeStats()
         self.moe_gate_model = None
+        self.out_dir = out_dir
 
     def new_iter(self, iter_id, bsz, seqlen):
         self.stats.new_iter(iter_id)
@@ -39,19 +40,18 @@ class Model:
             self.layers[l].forward(bsz, seqlen, ctx_len, self.stats)
         self.head.forward(bsz*seqlen, self.stats)
 
-        if is_prefill:
-            self.stats.write_to_csv(f"out/prefill/node_{self.rank}/prefill.csv")
-        else:
-            self.stats.write_to_csv(f"out/decode/node_{self.rank}/decode{str(iter_id-1)}.csv")
-        self.stats.summarize()
+        if self.out_dir:
+            if is_prefill:
+                self.stats.write_to_csv(f"{self.out_dir}/prefill/node_{self.dist_info.rank}/prefill.csv")
+            else:
+                self.stats.write_to_csv(f"{self.out_dir}/decode/node_{self.dist_info.rank}/decode{str(iter_id-1)}.csv")
+            self.stats.summarize()
 
 class Llama(Model):
-    def __init__(self, model_config, system_config, rank, dtype) -> None:
-        super().__init__(model_config, system_config, dtype)
+    def __init__(self, model_config, dist_info, dtype, out_dir) -> None:
+        super().__init__(model_config, dist_info, dtype, out_dir)
 
-        self.rank = rank
-        system_config.get_ranks(rank)
-
+        self.dist_info = dist_info
         self.num_hidden_layers = model_config["num_hidden_layers"]
         self.hidden_size = model_config["hidden_size"]
         self.intermediate_size = model_config["intermediate_size"]
@@ -60,10 +60,10 @@ class Llama(Model):
         self.vocab_size = model_config["vocab_size"]
         self.dtype = dtype
 
-        num_layers_per_device = intceil(self.num_hidden_layers/system_config.pp)
+        num_layers_per_device = divide_equal(self.num_hidden_layers, dist_info.pp)[dist_info.rank_pp]
 
         self.layers = []
-        for l in range(system_config.rank_pp*num_layers_per_device, (system_config.rank_pp+1)*num_layers_per_device):
+        for l in range(dist_info.rank_pp*num_layers_per_device, (dist_info.rank_pp+1)*num_layers_per_device):
             self.layers.append(
                 LlamaDecodeLayer(
                     layer_id="decode" + str(l), 
@@ -71,23 +71,21 @@ class Llama(Model):
                     num_attention_heads=self.num_attention_heads, 
                     num_key_value_heads=self.num_key_value_heads,
                     intermediate_size=self.intermediate_size,
-                    system_config=system_config,
+                    dist_info=dist_info,
                     dtype=dtype
                 )
             )
         self.head = LMHead(layer_id="lm_head",
                 hidden_size=self.hidden_size,
                 vocab_size=self.vocab_size,
-                system_config=system_config,
+                dist_info=dist_info,
                 dtype=dtype)
 
 class DeepSeekv3(Model):
-    def __init__(self, model_config, system_config, rank, dtype) -> None:
-        super().__init__(model_config, system_config, dtype)
+    def __init__(self, model_config, dist_info, dtype, out_dir) -> None:
+        super().__init__(model_config, dist_info, dtype, out_dir)
 
-        self.rank = rank
-        system_config.get_ranks(rank)
-
+        self.dist_info = dist_info
         self.num_hidden_layers = model_config["num_hidden_layers"]
         self.num_dense_layers = model_config["first_k_dense_replace"]
         self.hidden_size = model_config["hidden_size"]
@@ -105,11 +103,13 @@ class DeepSeekv3(Model):
         self.vocab_size = model_config["vocab_size"]
         self.dtype = dtype
 
-        num_layers_per_device = intceil(self.num_hidden_layers/system_config.pp)
+        num_layers_per_device = divide_equal(self.num_hidden_layers, dist_info.pp)[dist_info.rank_pp]
+
         self.layers = []
         moe_layer_ids = []
-        for l in range(system_config.rank_pp*num_layers_per_device, (system_config.rank_pp+1)*num_layers_per_device):
+        for l in range(dist_info.rank_pp*num_layers_per_device, (dist_info.rank_pp+1)*num_layers_per_device):
             is_moe = l >= self.num_dense_layers 
+
             self.layers.append(
                     DSv3DecodeLayer(
                         layer_id="decode" + str(l), 
@@ -124,7 +124,7 @@ class DeepSeekv3(Model):
                         num_experts_per_tok=self.num_experts_per_tok,
                         n_experts=self.n_routed_experts,
                         n_shared_experts=self.n_shared_experts,
-                        system_config=system_config,
+                        dist_info=dist_info,
                         dtype=dtype,
                         is_moe=is_moe
                     )
@@ -136,11 +136,11 @@ class DeepSeekv3(Model):
         self.head = LMHead(layer_id="lm_head",
                 hidden_size=self.hidden_size,
                 vocab_size=self.vocab_size,
-                system_config=system_config,
+                dist_info=dist_info,
                 dtype=dtype
             )
 
-        self.moe_gate_model = get_moe_gate_model(self.num_experts_per_tok, self.n_routed_experts, moe_layer_ids, system_config.expert_workload_model)
+        self.moe_gate_model = get_moe_gate_model(self.num_experts_per_tok, self.n_routed_experts, moe_layer_ids, dist_info.expert_workload_model)
 
 def get_arch(arch):
     if arch == "LlamaForCausalLM":
@@ -150,7 +150,7 @@ def get_arch(arch):
     else:
         raise NotImplementedError
 
-def build_model(model_config, system_config, rank, dtype):
+def build_model(model_config, dist_info, dtype, out_dir):
     arch = get_arch(model_config['architectures'][0])
-    return arch(model_config, system_config, rank, dtype)
+    return arch(model_config, dist_info, dtype, out_dir)
 
