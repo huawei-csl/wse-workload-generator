@@ -170,7 +170,7 @@ class Allreduce(Layer):
         return 0
     
     def network_data(self, bsz):
-        vecsize = 2 * bsz * self.vector_size * dtype_to_byte(self.dtype) # 1 vec receive + 1 vec send
+        vecsize = 2 * 2 * bsz * self.vector_size * dtype_to_byte(self.dtype) # Reduce: 1 vec receive + 1 vec send, Gather: 1 vec receive + 1 vec send
         logging.debug("{}: network data size (send + receive): {} B".format(self.uid, vecsize))
         return vecsize # in bytes
 
@@ -203,7 +203,7 @@ class AlltoAll(Layer):
         return 0
     
     def network_data(self, bsz):
-        vecsize = 2 * bsz * self.vector_size * self.cluster_size * dtype_to_byte(self.dtype) # N vec receive + N vec send, N: no. of devices in a cluster
+        vecsize = 2 * bsz * self.vector_size * (self.cluster_size - 1) * dtype_to_byte(self.dtype) # N-1 vec receive + N-1 vec send, N: no. of devices in a cluster
         logging.debug("{}: network data size (send + receive): {} B".format(self.uid, vecsize))
         return vecsize # in bytes
     
