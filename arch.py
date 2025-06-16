@@ -130,9 +130,6 @@ class DeepSeekv3(Model):
                     )
                 )
             
-            if is_moe:
-                moe_layer_ids.append("decode" + str(l) + "_moe")
-
         self.head = LMHead(layer_id="lm_head",
                 hidden_size=self.hidden_size,
                 vocab_size=self.vocab_size,
@@ -140,6 +137,7 @@ class DeepSeekv3(Model):
                 dtype=dtype
             )
 
+        moe_layer_ids = ["decode" + str(l) + "_moe" for l in range(self.num_dense_layers, self.num_hidden_layers)]
         self.moe_gate_model = get_moe_gate_model(self.num_experts_per_tok, self.n_routed_experts, moe_layer_ids, dist_info.expert_workload_model)
 
 def get_arch(arch):
