@@ -37,13 +37,20 @@ class Linear(Layer):
         num_ops = self.num_ops(bsz)
         hbm_reads = self.hbm_reads()
         network_data = self.network_data()
+        dims = self.get_dims(bsz)
 
-        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None)
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
 
     def memory_footprint(self):
         memory_footprint =  self.in_features * self.out_features * dtype_to_byte(self.dtype)
         return memory_footprint # weights only, in bytes
+    
+    def get_dims(self, bsz):
+        input_dims = [bsz, self.in_features]
+        weight_dims = [self.in_features, self.out_features]
+        out_dims = [bsz, self.out_features]
+        return str(input_dims) + " x " + str(weight_dims) + " -> " + str(out_dims)
     
     def num_ops(self, bsz):
         n_ops = bsz * self.in_features * self.out_features
@@ -76,9 +83,10 @@ class GroupedLinear(Layer):
         num_ops = self.num_ops(bsz)
         hbm_reads = self.hbm_reads()
         network_data = self.network_data()
+        dims = self.get_dims(bsz)
 
-        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None)
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
 
     def memory_footprint(self):
         memory_footprint =  self.n_groups * self.in_features * self.out_features * dtype_to_byte(self.dtype)
@@ -92,55 +100,15 @@ class GroupedLinear(Layer):
         rw = self.n_groups * self.in_features * self.out_features * dtype_to_byte(self.dtype)
         return rw # weights only, in bytes
 
+    def get_dims(self, bsz):
+        input_dims = [self.n_groups, bsz, self.in_features]
+        weight_dims = [self.n_groups, self.in_features, self.out_features]
+        out_dims = [self.n_groups, bsz, self.out_features]
+        return str(input_dims) + " x " + str(weight_dims) + " -> " + str(out_dims)
+    
     def network_data(self):
         return 0
-    
 
-class SelfAttention(Layer):
-    def __init__(self, uid, num_attention_heads, num_key_value_heads, head_dim, seq_parallel, dtype) -> None:
-        super().__init__()
-        logging.debug("SelfAttention layer {} with KV-cache dims: bsz x ctx_len x {} x {}".format(uid, num_key_value_heads, head_dim))
-
-        self.uid = uid
-        self.num_attention_heads = num_attention_heads
-        self.num_key_value_heads = num_key_value_heads
-        self.head_dim = head_dim
-        self.dtype = dtype
-        self.seq_parallel = seq_parallel
-
-    def forward(self, bsz, seqlen, ctx_len=None, stats=None):
-        memory_footprint = self.memory_footprint(bsz, ctx_len)
-        num_ops = self.num_ops(bsz, seqlen, ctx_len)
-        hbm_reads = self.hbm_reads(bsz, ctx_len)
-        network_data = self.network_data(bsz)
-
-        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None)
-
-    def memory_footprint(self, bsz, ctx_len):
-        memory_footprint = 2 * bsz * intceil(ctx_len/self.seq_parallel) * self.num_key_value_heads * self.head_dim * dtype_to_byte(self.dtype) # KV-cache
-        return memory_footprint  # KV-cache only, in bytes
-
-    def num_ops(self, bsz, seqlen, ctx_len):
-        is_prefill = ctx_len == 0
-        if is_prefill:
-            n_ops = bsz * intceil(seqlen/self.seq_parallel) * self.num_attention_heads * self.head_dim * seqlen # QKT
-            n_ops += bsz * intceil(seqlen/self.seq_parallel) * self.num_attention_heads * self.head_dim * seqlen # SV
-        else:
-            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
-            logging.debug("{} bsz: {}, ctx_len: {}, num_attention_heads: {}, head_dim: {}, seqlen: {}".format(self.uid, bsz, ctx_len_per_device, self.num_attention_heads, self.head_dim, seqlen))
-            n_ops = bsz * ctx_len_per_device * self.num_attention_heads * self.head_dim * seqlen # QKT
-            n_ops += bsz * ctx_len_per_device * self.num_attention_heads * self.head_dim * seqlen # SV
-        return n_ops # in terms of number of MACs
-
-    def hbm_reads(self, bsz=None, ctx_len=None):
-        ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
-        logging.debug("{} bsz: {}, ctx_len: {}, num_attention_heads: {}, head_dim: {}".format(self.uid, bsz, ctx_len_per_device, self.num_attention_heads, self.head_dim))
-        rw = 2 * bsz * ctx_len_per_device * self.num_key_value_heads * self.head_dim * dtype_to_byte(self.dtype) # KV-cache
-        return rw # KV-cache only, in bytes
-
-    def network_data(self, bsz=None):
-        return 0
 
 class Allreduce(Layer):
     def __init__(self, uid, vector_size, comm_group, dtype) -> None:
@@ -157,12 +125,18 @@ class Allreduce(Layer):
         num_ops = self.num_ops()
         hbm_reads = self.hbm_reads()
         network_data = self.network_data(bsz)
+        dims = self.get_dims(bsz)
 
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group)
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group, dims=dims)
 
     def memory_footprint(self):
         return 0
 
+    def get_dims(self, bsz):
+        vec_dims = [bsz, self.vector_size]
+        return str(vec_dims)
+    
     def num_ops(self):
         return 0
 
@@ -190,12 +164,18 @@ class AlltoAll(Layer):
         num_ops = self.num_ops()
         hbm_reads = self.hbm_reads()
         network_data = self.network_data(bsz)
+        dims = self.get_dims(bsz)
 
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group)
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group, dims=dims)
 
     def memory_footprint(self):
         return 0
 
+    def get_dims(self, bsz):
+        vec_dims = [bsz, self.vector_size]
+        return str(vec_dims)
+    
     def num_ops(self):
         return 0
 
@@ -206,6 +186,215 @@ class AlltoAll(Layer):
         vecsize = 2 * bsz * self.vector_size * (self.cluster_size - 1) * dtype_to_byte(self.dtype) # N-1 vec receive + N-1 vec send, N: no. of devices in a cluster
         logging.debug("{}: network data size (send + receive): {} B".format(self.uid, vecsize))
         return vecsize # in bytes
+
+class SelfAttention(Layer):
+    def __init__(self, uid, num_attention_heads, num_key_value_heads, head_dim, seq_parallel, dtype) -> None:
+        super().__init__()
+        logging.debug("SelfAttention layer {} with KV-cache dims: bsz x ctx_len x {} x {}".format(uid, num_key_value_heads, head_dim))
+
+        self.uid = uid
+        self.num_attention_heads = num_attention_heads
+        self.num_key_value_heads = num_key_value_heads
+        self.head_dim = head_dim
+        self.dtype = dtype
+        self.seq_parallel = seq_parallel
+
+    def forward(self, bsz, seqlen, ctx_len=None, stats=None):
+        memory_footprint = self.memory_footprint(bsz, ctx_len)
+        num_ops = self.num_ops(bsz, seqlen, ctx_len)
+        hbm_reads = self.hbm_reads(bsz, ctx_len)
+        network_data = self.network_data(bsz)
+        dims = self.get_dims(bsz, seqlen, ctx_len)
+
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
+
+    def memory_footprint(self, bsz, ctx_len):
+        memory_footprint = 2 * bsz * intceil(ctx_len/self.seq_parallel) * self.num_key_value_heads * self.head_dim * dtype_to_byte(self.dtype) # KV-cache
+        return memory_footprint  # KV-cache only, in bytes
+
+    def get_dims(self, bsz, seqlen, ctx_len):
+        is_prefill = ctx_len == 0
+        if is_prefill:
+            seqlen_per_device = intceil(seqlen/self.seq_parallel)
+            input_dims = [bsz, seqlen, self.n_local_heads, self.qk_head_dim]
+            K_dims = [bsz, seqlen_per_device, self.n_local_heads, self.qk_head_dim]
+            V_dims = [bsz, seqlen_per_device, self.n_local_heads, self.v_head_dim]
+            out_dims = [bsz, seqlen, self.n_local_heads, self.v_head_dim]
+        else:
+            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+            input_dims = [bsz, 1, self.n_local_heads, self.qk_head_dim]
+            K_dims = [bsz, ctx_len_per_device, self.n_local_heads, self.qk_head_dim]
+            V_dims = [bsz, ctx_len_per_device, self.n_local_heads, self.v_head_dim]
+            out_dims = [bsz, 1, self.n_local_heads, self.v_head_dim]
+        return ",".join(input_dims) + " x " + ",".join(K_dims) + " x " + ",".join(V_dims) + " -> " + ",".join(out_dims)
+    
+    def get_dims(self, bsz, seqlen, ctx_len):
+        is_prefill = ctx_len == 0
+        if is_prefill:
+            seqlen_per_device = intceil(seqlen/self.seq_parallel)
+            input_dims = [bsz, seqlen, self.num_attention_heads, self.head_dim]
+            K_dims = [bsz, seqlen_per_device, self.num_key_value_heads, self.head_dim]
+            V_dims = [bsz, seqlen_per_device, self.num_key_value_heads, self.head_dim]
+            out_dims = [bsz, seqlen, self.num_attention_heads, self.head_dim]
+        else:
+            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+            input_dims = [bsz, 1, self.num_attention_heads, self.head_dim]
+            K_dims = [bsz, ctx_len_per_device, self.num_key_value_heads, self.head_dim]
+            V_dims = [bsz, ctx_len_per_device, self.num_key_value_heads, self.head_dim]
+            out_dims = [bsz, 1, self.num_attention_heads, self.head_dim]
+        return "Q: " + str(input_dims) + ", K: " + str(K_dims) + ", V: " + str(V_dims) + " -> " + str(out_dims)
+    
+    def num_ops(self, bsz, seqlen, ctx_len):
+        is_prefill = ctx_len == 0
+        if is_prefill:
+            n_ops = bsz * intceil(seqlen/self.seq_parallel) * self.num_attention_heads * self.head_dim * seqlen # QKT
+            n_ops += bsz * intceil(seqlen/self.seq_parallel) * self.num_attention_heads * self.head_dim * seqlen # SV
+        else:
+            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+            logging.debug("{} bsz: {}, ctx_len: {}, num_attention_heads: {}, head_dim: {}, seqlen: {}".format(self.uid, bsz, ctx_len_per_device, self.num_attention_heads, self.head_dim, seqlen))
+            n_ops = bsz * ctx_len_per_device * self.num_attention_heads * self.head_dim * seqlen # QKT
+            n_ops += bsz * ctx_len_per_device * self.num_attention_heads * self.head_dim * seqlen # SV
+        return n_ops # in terms of number of MACs
+
+    def hbm_reads(self, bsz=None, ctx_len=None):
+        ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+        logging.debug("{} bsz: {}, ctx_len: {}, num_attention_heads: {}, head_dim: {}".format(self.uid, bsz, ctx_len_per_device, self.num_attention_heads, self.head_dim))
+        rw = 2 * bsz * ctx_len_per_device * self.num_key_value_heads * self.head_dim * dtype_to_byte(self.dtype) # KV-cache
+        return rw # KV-cache only, in bytes
+
+    def network_data(self, bsz=None):
+        return 0
+
+class MLANaiveAttention(Layer):
+    def __init__(self, uid, n_local_heads, qk_head_dim, v_head_dim, seq_parallel, dtype) -> None:
+        super().__init__()
+
+        self.uid = uid 
+        self.n_local_heads = n_local_heads
+        self.qk_head_dim = qk_head_dim
+        self.v_head_dim = v_head_dim
+        self.seq_parallel = seq_parallel
+        self.dtype = dtype
+
+    def forward(self, bsz, seqlen, ctx_len=None, stats=None):
+        memory_footprint = self.memory_footprint(bsz, ctx_len)
+        num_ops = self.num_ops(bsz, seqlen, ctx_len)
+        hbm_reads = self.hbm_reads(bsz, ctx_len)
+        network_data = self.network_data(bsz)
+        dims = self.get_dims(bsz, seqlen, ctx_len)
+
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
+
+    def memory_footprint(self, bsz, ctx_len):
+        memory_footprint = bsz * intceil(ctx_len/self.seq_parallel) * self.n_local_heads * self.qk_head_dim * dtype_to_byte(self.dtype) # k_cache
+        memory_footprint += bsz * intceil(ctx_len/self.seq_parallel) * self.n_local_heads * self.v_head_dim * dtype_to_byte(self.dtype) # v_cache
+        return memory_footprint  # KV-cache only, in bytes
+
+    def get_dims(self, bsz, seqlen, ctx_len):
+        is_prefill = ctx_len == 0
+        if is_prefill:
+            seqlen_per_device = intceil(seqlen/self.seq_parallel)
+            input_dims = [bsz, seqlen, self.n_local_heads, self.qk_head_dim]
+            K_dims = [bsz, seqlen_per_device, self.n_local_heads, self.qk_head_dim]
+            V_dims = [bsz, seqlen_per_device, self.n_local_heads, self.v_head_dim]
+            out_dims = [bsz, seqlen, self.n_local_heads, self.v_head_dim]
+        else:
+            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+            input_dims = [bsz, 1, self.n_local_heads, self.qk_head_dim]
+            K_dims = [bsz, ctx_len_per_device, self.n_local_heads, self.qk_head_dim]
+            V_dims = [bsz, ctx_len_per_device, self.n_local_heads, self.v_head_dim]
+            out_dims = [bsz, 1, self.n_local_heads, self.v_head_dim]
+        return "Q: " + str(input_dims) + ", K: " + str(K_dims) + ", V: " + str(V_dims) + " -> " + str(out_dims)
+    
+    def num_ops(self, bsz, seqlen, ctx_len):
+        is_prefill = ctx_len == 0
+        if is_prefill:
+            seqlen_per_device = intceil(seqlen/self.seq_parallel)
+            n_ops = bsz * seqlen_per_device * self.n_local_heads * self.qk_head_dim * seqlen # einsum(bshd,bthd→bsht)
+            n_ops += bsz * seqlen_per_device * self.n_local_heads * self.v_head_dim * seqlen # einsum(bsht,bthv→bshv)
+        else:
+            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+            n_ops = bsz * ctx_len_per_device * self.n_local_heads * self.qk_head_dim * seqlen # einsum(bshd,bthd→bsht)
+            n_ops += bsz * ctx_len_per_device * self.n_local_heads * self.v_head_dim * seqlen # einsum(bsht,bthv→bshv)
+        return n_ops # in terms of number of MACs
+
+    def hbm_reads(self, bsz=None, ctx_len=None):
+        ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+        rw = bsz * ctx_len_per_device * self.n_local_heads * self.qk_head_dim * dtype_to_byte(self.dtype) # k_cache
+        rw += bsz * ctx_len_per_device * self.n_local_heads * self.v_head_dim * dtype_to_byte(self.dtype) # v_cache
+        return rw # KV-cache only, in bytes
+
+    def network_data(self, bsz=None):
+        return 0
+
+class MLAAbsorbAttention(Layer):
+    def __init__(self, uid, n_local_heads, kv_lora_rank, qk_rope_head_dim, seq_parallel, dtype) -> None:
+        super().__init__()
+
+        self.uid = uid 
+        self.n_local_heads = n_local_heads
+        self.kv_lora_rank = kv_lora_rank
+        self.qk_rope_head_dim = qk_rope_head_dim
+        self.seq_parallel = seq_parallel
+        self.dtype = dtype
+
+    def forward(self, bsz, seqlen, ctx_len=None, stats=None):
+        memory_footprint = self.memory_footprint(bsz, ctx_len)
+        num_ops = self.num_ops(bsz, seqlen, ctx_len)
+        hbm_reads = self.hbm_reads(bsz, ctx_len)
+        network_data = self.network_data(bsz)
+        dims = self.get_dims(bsz, seqlen, ctx_len)
+
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
+        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
+
+    def memory_footprint(self, bsz, ctx_len):
+        ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+        memory_footprint = bsz * ctx_len_per_device * self.kv_lora_rank * dtype_to_byte(self.dtype) # kv_cache
+        memory_footprint += bsz * ctx_len_per_device * self.qk_rope_head_dim * dtype_to_byte(self.dtype) # pe_cache
+        return memory_footprint  # KV-cache only, in bytes
+    
+    def get_dims(self, bsz, seqlen, ctx_len):
+        is_prefill = ctx_len == 0
+        if is_prefill:
+            seqlen_per_device = intceil(seqlen/self.seq_parallel)
+            input_dims = [bsz, seqlen, self.n_local_heads, self.kv_lora_rank]
+            K_dims = [bsz, seqlen_per_device, self.kv_lora_rank]
+            V_dims = [bsz, seqlen_per_device, self.qk_rope_head_dim]
+            out_dims = [bsz, seqlen, self.n_local_heads, self.kv_lora_rank]
+        else:
+            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+            input_dims = [bsz, 1, self.n_local_heads, self.kv_lora_rank]
+            K_dims = [bsz, ctx_len_per_device, self.kv_lora_rank]
+            V_dims = [bsz, ctx_len_per_device, self.qk_rope_head_dim]
+            out_dims = [bsz, 1, self.n_local_heads, self.kv_lora_rank]
+        return "Q: " + str(input_dims) + ", KV: " + str(K_dims) + ", PE: " + str(V_dims) + " -> " + str(out_dims)
+    
+    def num_ops(self, bsz, seqlen, ctx_len):
+        is_prefill = ctx_len == 0
+        if is_prefill:
+            seqlen_per_device = intceil(seqlen/self.seq_parallel)
+            n_ops = bsz * seqlen_per_device * self.n_local_heads * self.kv_lora_rank * seqlen # einsum(bshc,btc→bsht)
+            n_ops += bsz * seqlen_per_device * self.n_local_heads * self.qk_rope_head_dim * seqlen # einsum(bshr,btr→bsht)
+            n_ops += bsz * seqlen_per_device * self.n_local_heads * self.kv_lora_rank * seqlen # einsum(bsht,btc→bshc)
+        else:
+            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+            n_ops = bsz * ctx_len_per_device * self.n_local_heads * self.kv_lora_rank * seqlen # einsum(bshc,btc→bsht)
+            n_ops += bsz * ctx_len_per_device * self.n_local_heads * self.qk_rope_head_dim * seqlen # einsum(bshr,btr→bsht)
+            n_ops += bsz * ctx_len_per_device * self.n_local_heads * self.kv_lora_rank * seqlen # einsum(bsht,btc→bshc)
+        return n_ops # in terms of number of MACs
+
+    def hbm_reads(self, bsz=None, ctx_len=None):
+        ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+        rw = bsz * ctx_len_per_device * self.kv_lora_rank * dtype_to_byte(self.dtype) # kv_cache
+        rw += bsz * ctx_len_per_device * self.qk_rope_head_dim * dtype_to_byte(self.dtype) # pe_cache
+        return rw # KV-cache only, in bytes
+
+    def network_data(self, bsz=None):
+        return 0
+
     
 class GQABlock(Layer):
     def __init__(self, uid, hidden_size, num_attention_heads, num_key_value_heads, dist_info, dtype) -> None:
@@ -248,100 +437,6 @@ class GQABlock(Layer):
         return mem_size # in bytes
 
 
-class MLANaiveAttention(Layer):
-    def __init__(self, uid, n_local_heads, qk_head_dim, v_head_dim, seq_parallel, dtype) -> None:
-        super().__init__()
-
-        self.uid = uid 
-        self.n_local_heads = n_local_heads
-        self.qk_head_dim = qk_head_dim
-        self.v_head_dim = v_head_dim
-        self.seq_parallel = seq_parallel
-        self.dtype = dtype
-
-    def forward(self, bsz, seqlen, ctx_len=None, stats=None):
-        memory_footprint = self.memory_footprint(bsz, ctx_len)
-        num_ops = self.num_ops(bsz, seqlen, ctx_len)
-        hbm_reads = self.hbm_reads(bsz, ctx_len)
-        network_data = self.network_data(bsz)
-
-        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None)
-
-    def memory_footprint(self, bsz, ctx_len):
-        memory_footprint = bsz * intceil(ctx_len/self.seq_parallel) * self.n_local_heads * self.qk_head_dim * dtype_to_byte(self.dtype) # k_cache
-        memory_footprint += bsz * intceil(ctx_len/self.seq_parallel) * self.n_local_heads * self.v_head_dim * dtype_to_byte(self.dtype) # v_cache
-        return memory_footprint  # KV-cache only, in bytes
-
-    def num_ops(self, bsz, seqlen, ctx_len):
-        is_prefill = ctx_len == 0
-        if is_prefill:
-            seqlen_per_device = intceil(seqlen/self.seq_parallel)
-            n_ops = bsz * seqlen_per_device * self.n_local_heads * self.qk_head_dim * seqlen # einsum(bshd,bthd→bsht)
-            n_ops += bsz * seqlen_per_device * self.n_local_heads * self.v_head_dim * seqlen # einsum(bsht,bthv→bshv)
-        else:
-            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
-            n_ops = bsz * ctx_len_per_device * self.n_local_heads * self.qk_head_dim * seqlen # einsum(bshd,bthd→bsht)
-            n_ops += bsz * ctx_len_per_device * self.n_local_heads * self.v_head_dim * seqlen # einsum(bsht,bthv→bshv)
-        return n_ops # in terms of number of MACs
-
-    def hbm_reads(self, bsz=None, ctx_len=None):
-        ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
-        rw = bsz * ctx_len_per_device * self.n_local_heads * self.qk_head_dim * dtype_to_byte(self.dtype) # k_cache
-        rw += bsz * ctx_len_per_device * self.n_local_heads * self.v_head_dim * dtype_to_byte(self.dtype) # v_cache
-        return rw # KV-cache only, in bytes
-
-    def network_data(self, bsz=None):
-        return 0
-
-class MLAAbsorbAttention(Layer):
-    def __init__(self, uid, n_local_heads, kv_lora_rank, qk_rope_head_dim, seq_parallel, dtype) -> None:
-        super().__init__()
-
-        self.uid = uid 
-        self.n_local_heads = n_local_heads
-        self.kv_lora_rank = kv_lora_rank
-        self.qk_rope_head_dim = qk_rope_head_dim
-        self.seq_parallel = seq_parallel
-        self.dtype = dtype
-
-    def forward(self, bsz, seqlen, ctx_len=None, stats=None):
-        memory_footprint = self.memory_footprint(bsz, ctx_len)
-        num_ops = self.num_ops(bsz, seqlen, ctx_len)
-        hbm_reads = self.hbm_reads(bsz, ctx_len)
-        network_data = self.network_data(bsz)
-
-        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B".format(self.uid, memory_footprint, num_ops, hbm_reads))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None)
-
-    def memory_footprint(self, bsz, ctx_len):
-        memory_footprint = bsz * intceil(ctx_len/self.seq_parallel) * self.kv_lora_rank * dtype_to_byte(self.dtype) # kv_cache
-        memory_footprint += bsz * intceil(ctx_len/self.seq_parallel) * self.qk_rope_head_dim * dtype_to_byte(self.dtype) # pe_cache
-        return memory_footprint  # KV-cache only, in bytes
-
-    def num_ops(self, bsz, seqlen, ctx_len):
-        is_prefill = ctx_len == 0
-        if is_prefill:
-            seqlen_per_device = intceil(seqlen/self.seq_parallel)
-            n_ops = bsz * seqlen_per_device * self.n_local_heads * self.kv_lora_rank * seqlen # einsum(bshc,btc→bsht)
-            n_ops += bsz * seqlen_per_device * self.n_local_heads * self.qk_rope_head_dim * seqlen # einsum(bshr,btr→bsht)
-            n_ops += bsz * seqlen_per_device * self.n_local_heads * self.kv_lora_rank * seqlen # einsum(bsht,btc→bshc)
-        else:
-            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
-            n_ops = bsz * ctx_len_per_device * self.n_local_heads * self.kv_lora_rank * seqlen # einsum(bshc,btc→bsht)
-            n_ops += bsz * ctx_len_per_device * self.n_local_heads * self.qk_rope_head_dim * seqlen # einsum(bshr,btr→bsht)
-            n_ops += bsz * ctx_len_per_device * self.n_local_heads * self.kv_lora_rank * seqlen # einsum(bsht,btc→bshc)
-        return n_ops # in terms of number of MACs
-
-    def hbm_reads(self, bsz=None, ctx_len=None):
-        ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
-        rw = bsz * ctx_len_per_device * self.kv_lora_rank * dtype_to_byte(self.dtype) # kv_cache
-        rw += bsz * ctx_len_per_device * self.qk_rope_head_dim * dtype_to_byte(self.dtype) # pe_cache
-        return rw # KV-cache only, in bytes
-
-    def network_data(self, bsz=None):
-        return 0
-    
 class MLANaiveBlock(Layer):
     def __init__(self, uid, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, dist_info, dtype) -> None:
         super().__init__()

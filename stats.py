@@ -14,8 +14,14 @@ class RuntimeStats:
         self.iter = iter_id
         self.stats[self.iter] = {}
         
-    def append(self, uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group):
-        self.stats[self.iter][uid] = {"memory_footprint": memory_footprint, "num_ops": num_ops, "hbm_reads": hbm_reads, "network_data": network_data, "comm_group": "N/A" if comm_group is None else comm_group}
+    def append(self, uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group, dims):
+        self.stats[self.iter][uid] = {
+            "memory_footprint": memory_footprint, 
+            "num_ops": num_ops, 
+            "hbm_reads": hbm_reads, 
+            "network_data": network_data, 
+            "comm_group": "N/A" if comm_group is None else comm_group,
+            "dims": dims}
 
     def sumUp(self):
         memory_footprint = sum([self.stats[self.iter][uid]["memory_footprint"] for uid in self.stats[self.iter]])
@@ -29,9 +35,9 @@ class RuntimeStats:
             os.makedirs(os.path.dirname(fname))
             
         with open(fname, "w") as f:
-            fieldnames = ["uid", "memory_footprint", "num_ops", "hbm_reads", "network_data", "comm_group"]
+            fieldnames = ["uid", "memory_footprint", "num_ops", "hbm_reads", "network_data", "comm_group", "dims"]
             writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")
-            writer.writerows([{"uid":"uid", "memory_footprint":"memory_footprint (B)", "num_ops":"num_ops (MAC)", "hbm_reads":"hbm_reads (B)", "network_data":"network_data (B)", "comm_group":"comm. group"}])
+            writer.writerows([{"uid":"uid", "memory_footprint":"memory_footprint (B)", "num_ops":"num_ops (MAC)", "hbm_reads":"hbm_reads (B)", "network_data":"network_data (B)", "comm_group":"comm. group", "dims": "Dimensions"}])
             writer.writerows([{"uid": uid} | self.stats[self.iter][uid] for uid in self.stats[self.iter]])
 
     def summarize(self):
