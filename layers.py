@@ -40,7 +40,7 @@ class Linear(Layer):
         dims = self.get_dims(bsz)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
+        stats.append(self.uid, "Linear", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
 
     def memory_footprint(self):
         memory_footprint =  self.in_features * self.out_features * dtype_to_byte(self.dtype)
@@ -86,7 +86,7 @@ class GroupedLinear(Layer):
         dims = self.get_dims(bsz)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
+        stats.append(self.uid, "GroupedLinear", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
 
     def memory_footprint(self):
         memory_footprint =  self.n_groups * self.in_features * self.out_features * dtype_to_byte(self.dtype)
@@ -128,7 +128,7 @@ class Allreduce(Layer):
         dims = self.get_dims(bsz)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group, dims=dims)
+        stats.append(self.uid, "AllReduce", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group, dims=dims)
 
     def memory_footprint(self):
         return 0
@@ -167,7 +167,7 @@ class AlltoAll(Layer):
         dims = self.get_dims(bsz)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group, dims=dims)
+        stats.append(self.uid, "AlltoAll", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group, dims=dims)
 
     def memory_footprint(self):
         return 0
@@ -207,7 +207,7 @@ class SelfAttention(Layer):
         dims = self.get_dims(bsz, seqlen, ctx_len)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
+        stats.append(self.uid, "SelfAttention", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
 
     def memory_footprint(self, bsz, ctx_len):
         memory_footprint = 2 * bsz * intceil(ctx_len/self.seq_parallel) * self.num_key_value_heads * self.head_dim * dtype_to_byte(self.dtype) # KV-cache
@@ -285,7 +285,7 @@ class MLANaiveAttention(Layer):
         dims = self.get_dims(bsz, seqlen, ctx_len)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
+        stats.append(self.uid, "MLANaiveAttention", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
 
     def memory_footprint(self, bsz, ctx_len):
         memory_footprint = bsz * intceil(ctx_len/self.seq_parallel) * self.n_local_heads * self.qk_head_dim * dtype_to_byte(self.dtype) # k_cache
@@ -348,7 +348,7 @@ class MLAAbsorbAttention(Layer):
         dims = self.get_dims(bsz, seqlen, ctx_len)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
-        stats.append(self.uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
+        stats.append(self.uid, "MLAAbsorbAttention", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
 
     def memory_footprint(self, bsz, ctx_len):
         ctx_len_per_device = intceil(ctx_len/self.seq_parallel)

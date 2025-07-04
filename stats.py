@@ -14,8 +14,9 @@ class RuntimeStats:
         self.iter = iter_id
         self.stats[self.iter] = {}
         
-    def append(self, uid, memory_footprint, num_ops, hbm_reads, network_data, comm_group, dims):
+    def append(self, uid, operation, memory_footprint, num_ops, hbm_reads, network_data, comm_group, dims):
         self.stats[self.iter][uid] = {
+            "operation": operation,
             "memory_footprint": memory_footprint, 
             "num_ops": num_ops, 
             "hbm_reads": hbm_reads, 
@@ -35,9 +36,9 @@ class RuntimeStats:
             os.makedirs(os.path.dirname(fname))
             
         with open(fname, "w") as f:
-            fieldnames = ["uid", "memory_footprint", "num_ops", "hbm_reads", "network_data", "comm_group", "dims"]
+            fieldnames = ["uid", "operation", "memory_footprint", "num_ops", "hbm_reads", "network_data", "comm_group", "dims"]
             writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")
-            writer.writerows([{"uid":"uid", "memory_footprint":"memory_footprint (B)", "num_ops":"num_ops (MAC)", "hbm_reads":"hbm_reads (B)", "network_data":"network_data (B)", "comm_group":"comm. group", "dims": "Dimensions"}])
+            writer.writerows([{"uid":"uid", "operation":"operation", "memory_footprint":"memory_footprint (B)", "num_ops":"num_ops (MAC)", "hbm_reads":"hbm_reads (B)", "network_data":"network_data (B)", "comm_group":"comm. group", "dims": "Dimensions"}])
             writer.writerows([{"uid": uid} | self.stats[self.iter][uid] for uid in self.stats[self.iter]])
 
     def summarize(self):
