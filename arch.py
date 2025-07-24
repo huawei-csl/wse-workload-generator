@@ -11,11 +11,13 @@ class Model:
         self.stats = RuntimeStats()
         self.moe_gate_model = None
         self.out_dir = out_dir
-
+        self.dist_info = dist_info
+        
     def new_iter(self, iter_id, bsz, seqlen):
         self.stats.new_iter(iter_id)
         if self.moe_gate_model:
-            self.moe_gate_model.new_iter(iter_id, bsz, seqlen)
+            bsz_per_device = intceil(bsz/self.dist_info.dp_ffn)
+            self.moe_gate_model.new_iter(iter_id, bsz_per_device, seqlen)
 
     '''
     Calculates memory size per device, including model weights and KV-cache. Return value is in bytes. 
