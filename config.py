@@ -5,7 +5,7 @@ import logging
 from collections import OrderedDict
 
 class DistInfo:
-    def __init__(self, rank, num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, expert_workload_model, ranks, attn_comm_groups, ffn_comm_groups) -> None:
+    def __init__(self, rank, num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, expert_workload_model, ranks, attn_comm_groups, ffn_comm_groups, n_redundant_shared_exp) -> None:
         self.rank = rank 
         self.num_nodes = num_nodes
         self.dp_attn = dp_attn
@@ -27,6 +27,16 @@ class DistInfo:
 
         self.attn_comm_groups = attn_comm_groups
         self.ffn_comm_groups = ffn_comm_groups
+
+        # n_redundant_shared_exp is the number of redundant shared expert copies in the system.
+        self.n_redundant_shared_exp = n_redundant_shared_exp
+        assert num_nodes % n_redundant_shared_exp == 0, "Number of nodes must be divisible by n_redundant_shared_exp"
+        
+        # each redundant shared expert copy will process samples from a number of nodes that is equal to num_nodes // n_redundant_shared_exp
+        shared_exp_cluster_size = num_nodes // n_redundant_shared_exp
+
+        # shared_expert_ranks is a list of ranks that are assigned to each redundant shared expert copy. only these ranks will keep a copy of the redundant shared expert.
+        self.shared_expert_ranks = [i*shared_exp_cluster_size for i in range(n_redundant_shared_exp)]
 
 class SystemConfig:
     def __init__(self) -> None:
@@ -61,7 +71,7 @@ class SystemConfig:
                          .format(rank, self.ranks["pp"][rank], self.ranks["dp_ffn"][rank], self.ranks["ep"][rank], self.ranks["tp_ffn"][rank],
                                  ffn_comm_groups["pp"][rank], ffn_comm_groups["dp_ffn"][rank], ffn_comm_groups["ep"][rank], ffn_comm_groups["tp_ffn"][rank]))
 
-    def from_args(self, num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, expert_workload_model):
+    def from_args(self, num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, n_redundant_shared_exp, expert_workload_model):
         self.num_nodes = num_nodes
         self.dp_attn = dp_attn
         self.dp_ffn = dp_ffn
@@ -70,8 +80,9 @@ class SystemConfig:
         self.pp = pp
         self.sp = sp
         self.ep = ep
+        self.n_redundant_shared_exp = n_redundant_shared_exp
         self.expert_workload_model = expert_workload_model
-
+        
         self.construct()
         return self
     
@@ -87,6 +98,7 @@ class SystemConfig:
         self.pp = cfg["pp"]
         self.sp = cfg["sp"]
         self.ep = cfg["ep"]
+        self.n_redundant_shared_exp = cfg["n_redundant_shared_exp"]
         self.expert_workload_model = cfg["expert_workload_model"]
 
         self.construct()
@@ -106,7 +118,8 @@ class SystemConfig:
             expert_workload_model = self.expert_workload_model,
             ranks =  {k: self.ranks[k][rank]  for k in self.ranks},
             attn_comm_groups = {k: self.attn_comm_groups[k][rank]  for k in self.attn_comm_groups}, 
-            ffn_comm_groups = {k: self.ffn_comm_groups[k][rank]  for k in self.ffn_comm_groups}
+            ffn_comm_groups = {k: self.ffn_comm_groups[k][rank]  for k in self.ffn_comm_groups},
+            n_redundant_shared_exp = self.n_redundant_shared_exp
         )
 
 '''
@@ -136,11 +149,6 @@ Arguments:
 
 '''
 def get_comm_groups(num_nodes: int, par_degrees: OrderedDict):
-    res = 1
-    for par_type in par_degrees:
-        res = res * par_degrees[par_type]
-    assert res == num_nodes, "number of nodes does not match the parallelization degrees"
-
     comm_groups = OrderedDict({key: {} for key in par_degrees})
     ranks = OrderedDict({key: {} for key in par_degrees})
     for rank in range(num_nodes):
@@ -163,6 +171,11 @@ def get_comm_groups(num_nodes: int, par_degrees: OrderedDict):
 if __name__=="__main__":
     num_nodes = 16
     par_degrees = OrderedDict({"tp": 4, "sp": 2, "dp": 2})
+
+    res = 1
+    for par_type in par_degrees:
+        res = res * par_degrees[par_type]
+    assert res == num_nodes, "number of nodes does not match the parallelization degrees"
 
     comm_groups, ranks = get_comm_groups(num_nodes, par_degrees)
 

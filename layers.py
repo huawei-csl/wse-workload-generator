@@ -609,7 +609,10 @@ class MoE(Layer):
             self.experts[i] = FFN(uid+"_exp_"+str(i), hidden_size, moe_intermediate_size, dist_info, dtype)
         
         intermediate_size = moe_intermediate_size * n_shared_experts
-        self.shared_expert = FFN(uid+"_shared_exp", hidden_size, intermediate_size, dist_info, dtype)
+
+        self.shared_expert = None
+        if self.dist_info.rank in self.dist_info.shared_expert_ranks:
+            self.shared_expert = FFN(uid+"_shared_exp", hidden_size, intermediate_size, dist_info, dtype)
 
     ## TODO: Do we really need a global all-to-all communication for both dispatch and combine?
     def forward(self, bsz, stats):
@@ -623,8 +626,9 @@ class MoE(Layer):
                 self.experts[e].forward(bsz_for_expert_i, stats=stats)
         
         ## TODO: At the moment, only a single device processes the shared expert. Consider other strategies.
-        if self.dist_info.rank_ep == 0:
-            self.shared_expert.forward(bsz, stats=stats)
+        if self.shared_expert:
+            bsz_for_shared_expert = intceil(bsz / self.dist_info.n_redundant_shared_exp)
+            self.shared_expert.forward(bsz_for_shared_expert, stats=stats)
 
         if self.dist_info.ep > 1:
             self.a2a_combine.forward(bsz, stats=stats)
