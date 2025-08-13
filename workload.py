@@ -10,11 +10,15 @@ class MoEGateModel:
         self.num_experts_per_tok = num_experts_per_tok
         self.n_routed_experts = n_routed_experts
         self.layer_ids = layer_ids
+        self.workload_model = workload_model
 
         if workload_model == "uniform":
             self.probs = {}
             for l, layer_id in enumerate(layer_ids):
                 self.probs[layer_id] = np.ones(shape=[n_routed_experts])/n_routed_experts
+
+        elif workload_model == "identical":
+            pass
 
         elif workload_model == "empirical_mmlu":
             with open("bincounts.json", "r") as f:
@@ -37,9 +41,23 @@ class MoEGateModel:
         
         logging.info("MoEGateModel new iter: {} with bsz: {} and seqlen: {}".format(iter_id, bsz, seqlen))
 
-        self.expert_routings[self.iter_id] = {}
-        for layer_id in self.layer_ids:
-            self.expert_routings[self.iter_id][layer_id] = np.random.choice(a=np.arange(0,self.n_routed_experts), size=[self.num_experts_per_tok, bsz*seqlen], replace=True, p=self.probs[layer_id])
+        if self.workload_model == "identical":
+            num_tokens = bsz * seqlen
+            assert self.num_experts_per_tok*num_tokens % self.n_routed_experts == 0, "num_experts_per_tok * bsz * seqlen must be divisible by n_routed_experts"
+            repeat_factor = self.num_experts_per_tok * num_tokens // self.n_routed_experts
+            
+            # when bincount is calculated with np.count_nonzero(expert_routings == expert_id),
+            # effective batch size is going to be equal to repeat_factor 
+            routings = np.repeat(np.arange(0,self.n_routed_experts), repeat_factor)
+            
+            self.expert_routings[self.iter_id] = {}
+            for layer_id in self.layer_ids:
+                np.random.shuffle(routings)
+                self.expert_routings[self.iter_id][layer_id] = routings.reshape([self.num_experts_per_tok, bsz*seqlen])
+        else:
+            self.expert_routings[self.iter_id] = {}
+            for layer_id in self.layer_ids:
+                self.expert_routings[self.iter_id][layer_id] = np.random.choice(a=np.arange(0,self.n_routed_experts), size=[self.num_experts_per_tok, bsz*seqlen], replace=True, p=self.probs[layer_id])
         
     def get_expert_routings(self, layer_id):
         return self.expert_routings[self.iter_id][layer_id]

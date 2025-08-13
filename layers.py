@@ -619,12 +619,16 @@ class MoE(Layer):
         if self.dist_info.ep > 1:
             self.a2a_dispatch.forward(bsz, stats=stats)
 
+        total_moe_num_tokens_per_device = 0
         for e in self.experts:
             bsz_for_expert_i = get_moe_gate_model().get_bincounts(layer_id=self.uid, expert_id=e)
-            logging.debug("expert {} num of routed samples: {}".format(e, bsz_for_expert_i))
+            logging.debug("expert {} num of routed samples: {}".format(e, bsz_for_expert_i))            
             if bsz_for_expert_i > 0:
                 self.experts[e].forward(bsz_for_expert_i, stats=stats)
-        
+            total_moe_num_tokens_per_device += bsz_for_expert_i
+
+        logging.debug("Total number of routed samples for device {}: {}".format(self.dist_info.rank_ep, total_moe_num_tokens_per_device))
+
         ## TODO: At the moment, only a single device processes the shared expert. Consider other strategies.
         if self.shared_expert:
             bsz_for_shared_expert = intceil(bsz / self.dist_info.n_redundant_shared_exp)
