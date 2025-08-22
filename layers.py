@@ -459,12 +459,16 @@ class MLANaiveBlock(Layer):
         self.ops["wo"] = Linear(uid+"_wo", n_local_heads*v_head_dim, hidden_size, dtype)
         if dist_info.tp_attn > 1:
             self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
-        
+        if dist_info.ep > 1:
+            self.ops["a2a_dispatch"] = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dtype)
+
     def forward(self, bsz, seqlen, ctx_len, stats):
         assert ctx_len == 0, "Naive block should be used only for prefill"
         for opname in self.ops:
             if isinstance(self.ops[opname], MLANaiveAttention):
                 self.ops[opname].forward(bsz, seqlen, ctx_len, stats=stats)
+            elif isinstance(self.ops[opname], AlltoAll):
+                self.ops[opname].forward(bsz*seqlen, stats=stats)
             else:
                 self.ops[opname].forward(bsz*seqlen, stats=stats)
 
@@ -495,12 +499,16 @@ class MLAAbsorbBlock(Layer):
         self.ops["wo"] = Linear(uid+"_wo", n_local_heads*v_head_dim, hidden_size, dtype)
         if dist_info.tp_attn > 1:
             self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
-        
+        if dist_info.ep > 1:
+            self.ops["a2a_dispatch"] = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dtype)
+
     def forward(self, bsz, seqlen, ctx_len, stats):
         assert seqlen == 1, "Absorb block should be used only for decode"
         for opname in self.ops:
             if isinstance(self.ops[opname], MLAAbsorbAttention):
                 self.ops[opname].forward(bsz, seqlen, ctx_len, stats=stats)
+            elif isinstance(self.ops[opname], AlltoAll):
+                self.ops[opname].forward(bsz*seqlen, stats=stats)
             else:
                 self.ops[opname].forward(bsz*seqlen, stats=stats)
 
@@ -597,7 +605,6 @@ class MoE(Layer):
         self.dist_info = dist_info
 
         if self.dist_info.ep > 1:
-            self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, self.dist_info.num_nodes, dtype)
             self.a2a_combine = AlltoAll(uid+"_a2a_comb", hidden_size, self.dist_info.num_nodes, dtype)
 
         rank_ep = dist_info.rank_ep
@@ -616,9 +623,6 @@ class MoE(Layer):
 
     ## TODO: Do we really need a global all-to-all communication for both dispatch and combine?
     def forward(self, bsz, stats):
-        if self.dist_info.ep > 1:
-            self.a2a_dispatch.forward(bsz, stats=stats)
-
         total_moe_num_tokens_per_device = 0
         for e in self.experts:
             bsz_for_expert_i = get_moe_gate_model().get_bincounts(layer_id=self.uid, expert_id=e)
@@ -629,13 +633,12 @@ class MoE(Layer):
 
         logging.debug("Total number of routed samples for device {}: {}".format(self.dist_info.rank_ep, total_moe_num_tokens_per_device))
 
-        ## TODO: At the moment, only a single device processes the shared expert. Consider other strategies.
         if self.shared_expert:
             bsz_for_shared_expert = intceil(bsz / self.dist_info.n_redundant_shared_exp)
             self.shared_expert.forward(bsz_for_shared_expert, stats=stats)
 
         if self.dist_info.ep > 1:
-            self.a2a_combine.forward(bsz, stats=stats)
+            self.a2a_combine.forward(total_moe_num_tokens_per_device, stats=stats)
 
 class LlamaDecodeLayer(Layer):
     def __init__(self, layer_id, hidden_size, num_attention_heads, num_key_value_heads, intermediate_size, dist_info, dtype) -> None:
