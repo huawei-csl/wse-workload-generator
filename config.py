@@ -5,7 +5,8 @@ import logging
 from collections import OrderedDict
 
 class DistInfo:
-    def __init__(self, rank, num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, expert_workload_model, ranks, attn_comm_groups, ffn_comm_groups, n_redundant_shared_exp) -> None:
+    def __init__(self, global_cfg, rank, num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, expert_workload_model, ranks, attn_comm_groups, ffn_comm_groups, n_redundant_shared_exp) -> None:
+        self.global_cfg = global_cfg
         self.rank = rank 
         self.num_nodes = num_nodes
         self.dp_attn = dp_attn
@@ -28,6 +29,9 @@ class DistInfo:
         self.attn_comm_groups = attn_comm_groups
         self.ffn_comm_groups = ffn_comm_groups
 
+        self.dp_attn_cluster = [k for k,v in global_cfg.ranks["dp_attn"].items() if v == self.rank_dp_attn]
+
+
         # n_redundant_shared_exp is the number of redundant shared expert copies in the system.
         self.n_redundant_shared_exp = n_redundant_shared_exp
         assert num_nodes % n_redundant_shared_exp == 0, "Number of nodes must be divisible by n_redundant_shared_exp"
@@ -37,6 +41,12 @@ class DistInfo:
 
         # shared_expert_ranks is a list of ranks that are assigned to each redundant shared expert copy. only these ranks will keep a copy of the redundant shared expert.
         self.shared_expert_ranks = [i*shared_exp_cluster_size for i in range(n_redundant_shared_exp)]
+
+    # every DP cluster has a master node that is responsible for broadcasting. 
+    # this function returns True if the current rank is the master of its DP cluster.
+    def is_dp_master(self):
+        return self.rank == self.dp_attn_cluster[0]
+
 
 class SystemConfig:
     def __init__(self) -> None:
@@ -54,7 +64,7 @@ class SystemConfig:
         attn_par_degrees = {"tp_attn": self.tp_attn, "sp": self.sp, "dp_attn": self.dp_attn, "pp":self.pp}
         attn_comm_groups, attn_ranks = get_comm_groups(self.num_nodes, attn_par_degrees)
         self.attn_comm_groups = attn_comm_groups
-
+        
         ffn_par_degrees = {"tp_ffn": self.tp_ffn, "ep": self.ep, "dp_ffn": self.dp_ffn, "pp":self.pp}
         ffn_comm_groups, ffn_ranks = get_comm_groups(self.num_nodes, ffn_par_degrees)
         self.ffn_comm_groups = ffn_comm_groups
@@ -106,6 +116,7 @@ class SystemConfig:
 
     def get_dist_info(self, rank):
         return DistInfo(
+            self,
             rank=rank,
             num_nodes = self.num_nodes,
             dp_attn = self.dp_attn,

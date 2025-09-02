@@ -58,13 +58,17 @@ class MoEGateModel:
             self.expert_routings[self.iter_id] = {}
             for layer_id in self.layer_ids:
                 self.expert_routings[self.iter_id][layer_id] = np.random.choice(a=np.arange(0,self.n_routed_experts), size=[self.num_experts_per_tok, bsz*seqlen], replace=True, p=self.probs[layer_id])
-        
+    
     def get_expert_routings(self, layer_id):
         return self.expert_routings[self.iter_id][layer_id]
 
     def get_bincounts(self, layer_id, expert_id):
         expert_routings = self.get_expert_routings(layer_id)
         return np.count_nonzero(expert_routings == expert_id)
+
+    def get_mapping_by_batchids(self, layer_id, batch_ids):
+        expert_routings = self.get_expert_routings(layer_id)
+        return expert_routings[:, batch_ids]
 
 moe_gate_model = None
 
