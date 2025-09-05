@@ -123,6 +123,7 @@ class DeepSeekv3(Model):
                         qk_rope_head_dim=self.qk_rope_head_dim, 
                         v_head_dim=self.v_head_dim,
                         intermediate_size=self.intermediate_size,
+                        moe_intermediate_size=self.moe_intermediate_size,
                         num_experts_per_tok=self.num_experts_per_tok,
                         n_experts=self.n_routed_experts,
                         n_shared_experts=self.n_shared_experts,

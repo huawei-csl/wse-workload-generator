@@ -44,7 +44,7 @@ class Linear(Layer):
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
         stats.append(self.uid, "Linear", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
 
-    def memory_footprint(self):
+    def memory_footprint(self, bsz=None, ctx_len=None):
         memory_footprint =  self.in_features * self.out_features * dtype_to_byte(self.dtype)
         return memory_footprint # weights only, in bytes
     
@@ -90,7 +90,7 @@ class GroupedLinear(Layer):
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
         stats.append(self.uid, "GroupedLinear", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
 
-    def memory_footprint(self):
+    def memory_footprint(self, bsz=None, ctx_len=None):
         memory_footprint =  self.n_groups * self.in_features * self.out_features * dtype_to_byte(self.dtype)
         return memory_footprint # weights only, in bytes
     
@@ -132,7 +132,7 @@ class Allreduce(Layer):
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
         stats.append(self.uid, "AllReduce", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group, dims=dims)
 
-    def memory_footprint(self):
+    def memory_footprint(self, bsz=None, ctx_len=None):
         return 0
 
     def get_dims(self, bsz):
@@ -171,7 +171,7 @@ class AlltoAll(Layer):
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
         stats.append(self.uid, "AlltoAll", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group, dims=dims)
 
-    def memory_footprint(self):
+    def memory_footprint(self, bsz=None, ctx_len=None):
         return 0
 
     def get_dims(self, bsz):
@@ -211,7 +211,7 @@ class Unicast(Layer):
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
         stats.append(self.uid, "Unicast", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.dst, dims=dims)
 
-    def memory_footprint(self):
+    def memory_footprint(self, bsz=None, ctx_len=None):
         return 0
 
     def get_dims(self):
@@ -251,7 +251,7 @@ class Multicast(Layer):
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
         stats.append(self.uid, "Multicast", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.dst, dims=dims)
 
-    def memory_footprint(self):
+    def memory_footprint(self, bsz=None, ctx_len=None):
         return 0
 
     def get_dims(self):
@@ -693,7 +693,7 @@ class MLABlock(Layer):
         self.MLA_absorb.next_layer = next_layer
 
     def memory_footprint(self, bsz, ctx_len):
-        mem_size = self.MLA_naive.memory_footprint(bsz, ctx_len)
+        mem_size = self.MLA_absorb.memory_footprint(bsz, ctx_len)
         return mem_size # in bytes
 
 # Each expert is an instance of this layer
@@ -719,8 +719,8 @@ class FFN(Layer):
         for opname in self.ops:
             self.ops[opname].forward(bsz, stats=stats)
 
-    def memory_footprint(self, bsz, ctx_len=None):
-        mem_size = sum([self.ops[opname].memory_footprint(bsz) for opname in self.ops])
+    def memory_footprint(self, bsz=None, ctx_len=None):
+        mem_size = sum([self.ops[opname].memory_footprint() for opname in self.ops])
         return mem_size # in bytes
 
 
@@ -868,7 +868,13 @@ class MoE(Layer):
                 Multicast(self.uid+"_multicast", vector_size=self.hidden_size*batch_size_per_node, src=self.dist_info.rank, dst=self.dist_info.dp_attn_cluster, dtype=self.dtype).forward(stats=stats)
             else:
                 raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
-            
+
+    def memory_footprint(self, bsz=None, ctx_len=None):
+        mem_size = sum([self.experts[e].memory_footprint() for e in self.experts])
+        if self.shared_expert:
+            mem_size += self.shared_expert.memory_footprint()
+        return mem_size # in bytes
+     
 class LlamaDecodeLayer(Layer):
     def __init__(self, layer_id, hidden_size, num_attention_heads, num_key_value_heads, intermediate_size, dist_info, dtype) -> None:
         super().__init__()
@@ -898,7 +904,7 @@ class LlamaDecodeLayer(Layer):
 
 
 class DSv3DecodeLayer(Layer):
-    def __init__(self, layer_id, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, intermediate_size, num_experts_per_tok, n_experts, n_shared_experts, dist_info, dtype, is_moe=False) -> None:
+    def __init__(self, layer_id, hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, intermediate_size, moe_intermediate_size, num_experts_per_tok, n_experts, n_shared_experts, dist_info, dtype, is_moe=False) -> None:
         super().__init__()
         logging.info("Creating Decode layer {}".format(layer_id))
 
@@ -907,7 +913,7 @@ class DSv3DecodeLayer(Layer):
         self.attention = MLABlock(layer_id+"_attn", hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, dist_info, next_layer=None, dtype=dtype)
 
         if is_moe:
-            self.ffn = MoE(layer_id+"_moe", hidden_size, intermediate_size, num_experts_per_tok, n_experts, n_shared_experts, dist_info, dtype)
+            self.ffn = MoE(layer_id+"_moe", hidden_size, moe_intermediate_size, num_experts_per_tok, n_experts, n_shared_experts, dist_info, dtype)
         else:
             self.ffn = Dense(layer_id+"_dense", hidden_size, intermediate_size, dist_info, dtype)
 
@@ -917,7 +923,7 @@ class DSv3DecodeLayer(Layer):
         is_prefill = ctx_len == 0
         if not is_prefill:
             assert seqlen == 1
-            
+        
         bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
         self.attention.forward(bsz_per_device_attn, seqlen, ctx_len, stats=stats)
 

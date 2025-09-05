@@ -49,7 +49,8 @@ if __name__=="__main__":
 
     out_dir = os.path.abspath(args.outdir)
     assert out_dir not in [".", "..", "./", "/", "//"], "out_dir seems to be not safe"
-    shutil.rmtree(out_dir)
+    if os.path.exists(out_dir):
+        shutil.rmtree(out_dir)
     os.makedirs(out_dir)
 
     generator = Generator()
@@ -68,5 +69,11 @@ if __name__=="__main__":
 
     decode_models = []
     for rank in nodes:
-        decode_models.append(build_model(model_config, decode_cfg.get_dist_info(rank), args.dtype, out_dir))
+        model = build_model(model_config, decode_cfg.get_dist_info(rank), args.dtype, out_dir)
+        footprint = model.memory_footprint(args.bsz, args.prefill_len+args.decode_len)
+        logging.info("rank: {} HBM footprint: {:.2f} GB".format(rank, footprint/1024/1024/1024))
+        decode_models.append(model)
+    
     generator.decode(decode_models, args.bsz, args.prefill_len, args.decode_len, args.simplified_decode)
+        
+
