@@ -525,6 +525,12 @@ class MLANaiveBlock(Layer):
         super().__init__()
         logging.info("Creating MLA naive layer {}".format(uid))
 
+        self.uid = uid
+        self.dist_info = dist_info
+        self.next_layer = next_layer
+        self.hidden_size = hidden_size
+        self.dtype = dtype
+
         n_local_heads = intceil(n_heads / dist_info.tp_attn)
 
         qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
@@ -542,18 +548,46 @@ class MLANaiveBlock(Layer):
         self.ops["wo"] = Linear(uid+"_wo", n_local_heads*v_head_dim, hidden_size, dtype)
         if dist_info.tp_attn > 1:
             self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
-        if dist_info.ep > 1:
-            self.ops["a2a_dispatch"] = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dtype)
+
+        if dist_info.moe_comm == "alltoall":
+            self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dtype)
 
     def forward(self, bsz, seqlen, ctx_len, stats):
         assert ctx_len == 0, "Naive block should be used only for prefill"
         for opname in self.ops:
             if isinstance(self.ops[opname], MLANaiveAttention):
                 self.ops[opname].forward(bsz, seqlen, ctx_len, stats=stats)
-            elif isinstance(self.ops[opname], AlltoAll):
-                self.ops[opname].forward(bsz*seqlen, stats=stats)
             else:
                 self.ops[opname].forward(bsz*seqlen, stats=stats)
+
+        # if the next layer is Dense, we need to multicast the output to all nodes that do not have a copy of the queries processed by this DP cluster
+        # for example, if num_nodes = 16, dp_attn = 4, rank of this node is 0, then we multicast the queries to nodes [4,5,6,7,8,9,10,11,12,13,14,15] 
+        if isinstance(self.next_layer, Dense):
+            if self.dist_info.is_dp_master(): # only the master node in a DP cluster sends the multicast
+                dst_nodes = [i for i in range(self.dist_info.num_nodes) if i not in self.dist_info.dp_attn_cluster] # all nodes not in this DP cluster
+                Multicast(self.uid+"_multicast", vector_size=self.hidden_size*bsz*seqlen, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(stats=stats)
+
+        # if the next layer is MoE, we need to multicast the output to the experts selected by the gate for the current batch
+        if isinstance(self.next_layer, MoE):
+            if self.dist_info.moe_comm == "alltoall":
+                self.a2a_dispatch.forward(bsz*seqlen, stats=stats)
+            elif self.dist_info.moe_comm == "multicast":
+                # batch ids processed by this DP cluster
+                batch_ids = list(range(self.dist_info.rank_dp_attn*bsz*seqlen, (self.dist_info.rank_dp_attn+1)*bsz*seqlen))
+                for batch_id in batch_ids:
+                    # get expert ids for this query
+                    mapping = get_moe_gate_model().get_mapping_by_batchids(self.next_layer.uid, batch_id)
+                    logging.debug("batch_id: {}, mapping: {}".format(batch_id, mapping))
+
+                    # calculate with nodes the experts are located
+                    dst_nodes = sorted([self.next_layer.get_node_from_expert_id(expert_id) for expert_id in mapping.tolist()])
+
+                    # remove repeating nodes from dst_nodes
+                    dst_nodes = list(dict.fromkeys(dst_nodes))
+
+                    Multicast(self.uid+"_multicast_"+str(batch_id), vector_size=self.hidden_size, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(stats=stats)
+            else:
+                raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
 
     def memory_footprint(self, bsz, ctx_len):
         mem_size = sum([self.ops[opname].memory_footprint(bsz, ctx_len) for opname in self.ops])
@@ -591,6 +625,9 @@ class MLAAbsorbBlock(Layer):
             # Allreduce to aggregate output from tensor parallel devices
             self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
 
+        if dist_info.moe_comm == "alltoall":
+            self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dtype)
+
     def forward(self, bsz, seqlen, ctx_len, stats):
         assert seqlen == 1, "Absorb block should be used only for decode"
         for opname in self.ops:
@@ -608,21 +645,26 @@ class MLAAbsorbBlock(Layer):
 
         # if the next layer is MoE, we need to multicast the output to the experts selected by the gate for the current batch
         if isinstance(self.next_layer, MoE):
-            # batch ids processed by this DP cluster
-            batch_ids = list(range(self.dist_info.rank_dp_attn*bsz*seqlen, (self.dist_info.rank_dp_attn+1)*bsz*seqlen))
-            for batch_id in batch_ids:
-                # get expert ids for this query
-                mapping = get_moe_gate_model().get_mapping_by_batchids(self.next_layer.uid, batch_id)
-                logging.debug("batch_id: {}, mapping: {}".format(batch_id, mapping))
+            if self.dist_info.moe_comm == "alltoall":
+                self.a2a_dispatch.forward(bsz*seqlen, stats=stats)
+            elif self.dist_info.moe_comm == "multicast":
+                # batch ids processed by this DP cluster
+                batch_ids = list(range(self.dist_info.rank_dp_attn*bsz*seqlen, (self.dist_info.rank_dp_attn+1)*bsz*seqlen))
+                for batch_id in batch_ids:
+                    # get expert ids for this query
+                    mapping = get_moe_gate_model().get_mapping_by_batchids(self.next_layer.uid, batch_id)
+                    logging.debug("batch_id: {}, mapping: {}".format(batch_id, mapping))
 
-                # calculate with nodes the experts are located
-                dst_nodes = sorted([self.next_layer.get_node_from_expert_id(expert_id) for expert_id in mapping.tolist()])
+                    # calculate with nodes the experts are located
+                    dst_nodes = sorted([self.next_layer.get_node_from_expert_id(expert_id) for expert_id in mapping.tolist()])
 
-                # remove repeating nodes from dst_nodes
-                dst_nodes = list(dict.fromkeys(dst_nodes))
+                    # remove repeating nodes from dst_nodes
+                    dst_nodes = list(dict.fromkeys(dst_nodes))
 
-                Multicast(self.uid+"_multicast_"+str(batch_id), vector_size=self.hidden_size, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(stats=stats)
-
+                    Multicast(self.uid+"_multicast_"+str(batch_id), vector_size=self.hidden_size, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(stats=stats)
+            else:
+                raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
+            
     def memory_footprint(self, bsz, ctx_len):
         mem_size = sum([self.ops[opname].memory_footprint(bsz, ctx_len) for opname in self.ops])
         return mem_size # in bytes
@@ -723,6 +765,9 @@ class MoE(Layer):
         self.dist_info = dist_info
         self.dtype = dtype 
 
+        if self.dist_info.ep > 1 and self.dist_info.moe_comm == "alltoall":
+            self.a2a_combine = AlltoAll(uid+"_a2a_comb", hidden_size, self.dist_info.num_nodes, dtype)
+
         self.experts = {}
         for i in self.map_experts():
             self.experts[i] = FFN(uid+"_exp_"+str(i), hidden_size, moe_intermediate_size, dist_info, dtype)
@@ -779,46 +824,51 @@ class MoE(Layer):
             bsz_for_shared_expert = intceil(bsz / self.dist_info.n_redundant_shared_exp)
             self.shared_expert.forward(bsz_for_shared_expert, stats=stats)
 
-        # after MoE layer, gather the outputs in specific nodes to sum them
-        # we merge all unicasts to the same dst node
         if self.dist_info.ep > 1:
-            # count how many vector needs to go to each node
-            unicast_count = np.zeros(shape=[self.dist_info.dp_ffn*self.dist_info.tp_ffn*self.dist_info.ep], dtype=np.int64)
+            if self.dist_info.moe_comm == "alltoall":
+                self.a2a_combine.forward(total_moe_num_tokens_per_device, stats=stats)
+            elif self.dist_info.moe_comm == "multicast":
+                # after MoE layer, gather the outputs in specific nodes to sum them
+                # we merge all unicasts to the same dst node
+                # count how many vector needs to go to each node
+                unicast_count = np.zeros(shape=[self.dist_info.dp_ffn*self.dist_info.tp_ffn*self.dist_info.ep], dtype=np.int64)
 
-            # global batch size
-            max_batch_size = bsz * self.dist_info.dp_ffn
+                # global batch size
+                max_batch_size = bsz * self.dist_info.dp_ffn
 
-            # number of batch ids
-            batch_size_per_node = max_batch_size // self.dist_info.num_nodes
+                # number of batch ids
+                batch_size_per_node = max_batch_size // self.dist_info.num_nodes
 
-            for e in self.experts:
-                mapping = get_moe_gate_model().get_expert_routings(self.uid)
+                for e in self.experts:
+                    mapping = get_moe_gate_model().get_expert_routings(self.uid)
 
-                # batch ids routed to expert e
-                batch_ids = np.nonzero(mapping==e)[1]
+                    # batch ids routed to expert e
+                    batch_ids = np.nonzero(mapping==e)[1]
 
-                # dest nodes for batch ids
-                dest_node = np.floor(batch_ids / batch_size_per_node).astype(int)
-                logging.debug("dest_node: {}".format(dest_node))
+                    # dest nodes for batch ids
+                    dest_node = np.floor(batch_ids / batch_size_per_node).astype(int)
+                    logging.debug("dest_node: {}".format(dest_node))
 
-                # count the number of occurances of each node in dest_node
-                bincount = np.bincount(dest_node, minlength=self.dist_info.num_nodes)
+                    # count the number of occurances of each node in dest_node
+                    bincount = np.bincount(dest_node, minlength=self.dist_info.num_nodes)
 
-                # accumulate the count to unicast_count
-                unicast_count += bincount
+                    # accumulate the count to unicast_count
+                    unicast_count += bincount
 
-            for i in range(self.dist_info.num_nodes):
-                # if dst node is itself, skip
-                if i == self.dist_info.rank:
-                    continue
+                for i in range(self.dist_info.num_nodes):
+                    # if dst node is itself, skip
+                    if i == self.dist_info.rank:
+                        continue
 
-                # if there are tokens to send to node i, do unicast
-                if unicast_count[i] > 0:
-                    Unicast(self.uid+"_unicast_"+str(i), vector_size=self.hidden_size*unicast_count[i], src=self.dist_info.rank, dst=i, dtype=self.dtype).forward(stats=stats)
+                    # if there are tokens to send to node i, do unicast
+                    if unicast_count[i] > 0:
+                        Unicast(self.uid+"_unicast_"+str(i), vector_size=self.hidden_size*unicast_count[i], src=self.dist_info.rank, dst=i, dtype=self.dtype).forward(stats=stats)
 
-            # once all unicasts are done, perform a multicast within the DP cluster for the next layer
-            Multicast(self.uid+"_multicast", vector_size=self.hidden_size*batch_size_per_node, src=self.dist_info.rank, dst=self.dist_info.dp_attn_cluster, dtype=self.dtype).forward(stats=stats)
-
+                # once all unicasts are done, perform a multicast within the DP cluster for the next layer
+                Multicast(self.uid+"_multicast", vector_size=self.hidden_size*batch_size_per_node, src=self.dist_info.rank, dst=self.dist_info.dp_attn_cluster, dtype=self.dtype).forward(stats=stats)
+            else:
+                raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
+            
 class LlamaDecodeLayer(Layer):
     def __init__(self, layer_id, hidden_size, num_attention_heads, num_key_value_heads, intermediate_size, dist_info, dtype) -> None:
         super().__init__()

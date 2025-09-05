@@ -5,7 +5,7 @@ import logging
 from collections import OrderedDict
 
 class DistInfo:
-    def __init__(self, global_cfg, rank, num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, expert_workload_model, ranks, attn_comm_groups, ffn_comm_groups, n_redundant_shared_exp) -> None:
+    def __init__(self, global_cfg, rank, num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, expert_workload_model, ranks, attn_comm_groups, ffn_comm_groups, n_redundant_shared_exp, moe_comm) -> None:
         self.global_cfg = global_cfg
         self.rank = rank 
         self.num_nodes = num_nodes
@@ -17,7 +17,8 @@ class DistInfo:
         self.sp = sp
         self.ep = ep
         self.expert_workload_model = expert_workload_model
-
+        self.moe_comm = moe_comm
+        
         self.rank_dp_attn = ranks["dp_attn"]
         self.rank_dp_ffn = ranks["dp_ffn"]
         self.rank_tp_attn = ranks["tp_attn"]
@@ -81,7 +82,7 @@ class SystemConfig:
                          .format(rank, self.ranks["pp"][rank], self.ranks["dp_ffn"][rank], self.ranks["ep"][rank], self.ranks["tp_ffn"][rank],
                                  ffn_comm_groups["pp"][rank], ffn_comm_groups["dp_ffn"][rank], ffn_comm_groups["ep"][rank], ffn_comm_groups["tp_ffn"][rank]))
 
-    def from_args(self, num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, n_redundant_shared_exp, expert_workload_model):
+    def from_args(self, num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, n_redundant_shared_exp, expert_workload_model, moe_comm):
         self.num_nodes = num_nodes
         self.dp_attn = dp_attn
         self.dp_ffn = dp_ffn
@@ -92,7 +93,8 @@ class SystemConfig:
         self.ep = ep
         self.n_redundant_shared_exp = n_redundant_shared_exp
         self.expert_workload_model = expert_workload_model
-        
+        self.moe_comm = moe_comm
+
         self.construct()
         return self
     
@@ -110,6 +112,7 @@ class SystemConfig:
         self.ep = cfg["ep"]
         self.n_redundant_shared_exp = cfg["n_redundant_shared_exp"]
         self.expert_workload_model = cfg["expert_workload_model"]
+        self.moe_comm = cfg["moe_comm"]
 
         self.construct()
         return self
@@ -130,7 +133,8 @@ class SystemConfig:
             ranks =  {k: self.ranks[k][rank]  for k in self.ranks},
             attn_comm_groups = {k: self.attn_comm_groups[k][rank]  for k in self.attn_comm_groups}, 
             ffn_comm_groups = {k: self.ffn_comm_groups[k][rank]  for k in self.ffn_comm_groups},
-            n_redundant_shared_exp = self.n_redundant_shared_exp
+            n_redundant_shared_exp = self.n_redundant_shared_exp,
+            moe_comm=self.moe_comm
         )
 
 '''

@@ -18,7 +18,7 @@ def run(model_config, tp_attn=1, tp_ffn=1, dp_attn=1, dp_ffn=1, pp=1, ep=1):
     assert num_nodes == tp_ffn * dp_ffn * pp * ep
 
     generator = Generator()
-    decode_cfg = SystemConfig().from_args(num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, n_redundant_shared_exp=1, expert_workload_model="uniform")
+    decode_cfg = SystemConfig().from_args(num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, n_redundant_shared_exp=1, expert_workload_model="uniform", moe_comm="alltoall")
 
     models = []
     for rank in range(decode_cfg.num_nodes):

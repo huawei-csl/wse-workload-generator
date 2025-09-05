@@ -10,7 +10,8 @@
         "sp": 2,
         "ep": 1,
         "n_redundant_shared_exp": 1,
-        "expert_workload_model": "empirical_mmlu"
+        "expert_workload_model": "empirical_mmlu",
+        "moe_comm": "alltoall"
     },
     "decode": 
     {
@@ -23,6 +24,7 @@
         "sp": 1,
         "ep": 16,
         "n_redundant_shared_exp": 4,
-        "expert_workload_model": "empirical_mmlu"
+        "expert_workload_model": "empirical_mmlu",
+        "moe_comm": "alltoall"
     }
 }
