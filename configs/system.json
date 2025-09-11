@@ -25,6 +25,6 @@
         "ep": 16,
         "n_redundant_shared_exp": 4,
         "expert_workload_model": "empirical_mmlu",
-        "moe_comm": "alltoall"
+        "moe_comm": "multicast"
     }
 }

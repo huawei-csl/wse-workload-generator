@@ -230,6 +230,40 @@ class Unicast(Layer):
         return vecsize # in bytes
 
 
+class Barrier(Layer):
+    def __init__(self, uid, nodes: List[int]) -> None:
+        super().__init__()
+        logging.debug("Barrier layer {} for nodes {}".format(uid, nodes))
+
+        self.uid = uid
+        self.nodes = nodes
+
+    def forward(self, stats=None):
+        memory_footprint = self.memory_footprint()
+        num_ops = self.num_ops()
+        hbm_reads = self.hbm_reads()
+        network_data = self.network_data()
+        dims = self.get_dims()
+
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
+        stats.append(self.uid, "Barrier", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.nodes, dims=dims)
+
+    def memory_footprint(self, bsz=None, ctx_len=None):
+        return 0
+
+    def get_dims(self):
+        return "N/A"
+    
+    def num_ops(self):
+        return 0
+
+    def hbm_reads(self):
+        return 0
+    
+    def network_data(self):
+        return 0
+
+
 class Multicast(Layer):
     def __init__(self, uid, vector_size, src: int, dst: List[int], dtype) -> None:
         super().__init__()
@@ -566,9 +600,10 @@ class MLANaiveBlock(Layer):
             if self.dist_info.is_dp_master(): # only the master node in a DP cluster sends the multicast
                 dst_nodes = [i for i in range(self.dist_info.num_nodes) if i not in self.dist_info.dp_attn_cluster] # all nodes not in this DP cluster
                 Multicast(self.uid+"_multicast", vector_size=self.hidden_size*bsz*seqlen, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(stats=stats)
+            Barrier(self.uid+"_barrier", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
 
         # if the next layer is MoE, we need to multicast the output to the experts selected by the gate for the current batch
-        if isinstance(self.next_layer, MoE):
+        elif isinstance(self.next_layer, MoE):
             if self.dist_info.moe_comm == "alltoall":
                 self.a2a_dispatch.forward(bsz*seqlen, stats=stats)
             elif self.dist_info.moe_comm == "multicast":
@@ -586,9 +621,13 @@ class MLANaiveBlock(Layer):
                     dst_nodes = list(dict.fromkeys(dst_nodes))
 
                     Multicast(self.uid+"_multicast_"+str(batch_id), vector_size=self.hidden_size, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(stats=stats)
+                Barrier(self.uid+"_barrier", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
             else:
                 raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
-
+        
+        else:
+            raise NotImplementedError("Next layer type {} not implemented".format(type(self.next_layer)))
+        
     def memory_footprint(self, bsz, ctx_len):
         mem_size = sum([self.ops[opname].memory_footprint(bsz, ctx_len) for opname in self.ops])
         return mem_size # in bytes
@@ -642,9 +681,10 @@ class MLAAbsorbBlock(Layer):
             if self.dist_info.is_dp_master(): # only the master node in a DP cluster sends the multicast
                 dst_nodes = [i for i in range(self.dist_info.num_nodes) if i not in self.dist_info.dp_attn_cluster] # all nodes not in this DP cluster
                 Multicast(self.uid+"_multicast", vector_size=self.hidden_size*bsz*seqlen, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(stats=stats)
+            Barrier(self.uid+"_barrier", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
 
         # if the next layer is MoE, we need to multicast the output to the experts selected by the gate for the current batch
-        if isinstance(self.next_layer, MoE):
+        elif isinstance(self.next_layer, MoE):
             if self.dist_info.moe_comm == "alltoall":
                 self.a2a_dispatch.forward(bsz*seqlen, stats=stats)
             elif self.dist_info.moe_comm == "multicast":
@@ -662,9 +702,14 @@ class MLAAbsorbBlock(Layer):
                     dst_nodes = list(dict.fromkeys(dst_nodes))
 
                     Multicast(self.uid+"_multicast_"+str(batch_id), vector_size=self.hidden_size, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(stats=stats)
+                Barrier(self.uid+"_barrier", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
             else:
                 raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
-            
+        
+        else:
+            raise NotImplementedError("Next layer type {} not implemented for MLAAbsorbBlock".format(type(self.next_layer)))
+
+
     def memory_footprint(self, bsz, ctx_len):
         mem_size = sum([self.ops[opname].memory_footprint(bsz, ctx_len) for opname in self.ops])
         return mem_size # in bytes
@@ -864,8 +909,11 @@ class MoE(Layer):
                     if unicast_count[i] > 0:
                         Unicast(self.uid+"_unicast_"+str(i), vector_size=self.hidden_size*unicast_count[i], src=self.dist_info.rank, dst=i, dtype=self.dtype).forward(stats=stats)
 
+                Barrier(self.uid+"_barrier_uc", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
+
                 # once all unicasts are done, perform a multicast within the DP cluster for the next layer
                 Multicast(self.uid+"_multicast", vector_size=self.hidden_size*batch_size_per_node, src=self.dist_info.rank, dst=self.dist_info.dp_attn_cluster, dtype=self.dtype).forward(stats=stats)
+                Barrier(self.uid+"_barrier_mc", nodes=self.dist_info.dp_attn_cluster).forward(stats=stats) # ensure all nodes in the DP cluster have received the multicast before proceeding
             else:
                 raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
 
