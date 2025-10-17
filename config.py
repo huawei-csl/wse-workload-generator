@@ -35,13 +35,18 @@ class DistInfo:
         # n_redundant_shared_exp is the number of redundant shared expert copies in the system.
         self.n_redundant_shared_exp = n_redundant_shared_exp
         assert num_nodes % n_redundant_shared_exp == 0, "Number of nodes must be divisible by n_redundant_shared_exp"
+
+        if self.ep == self.num_nodes:
+            # each redundant shared expert copy will process samples from a number of nodes that is equal to num_nodes // n_redundant_shared_exp
+            shared_exp_cluster_size = num_nodes // n_redundant_shared_exp
+
+            # shared_expert_ranks is a list of ranks that are assigned to each redundant shared expert copy. only these ranks will keep a copy of the redundant shared expert.
+            self.shared_expert_ranks = [i*shared_exp_cluster_size for i in range(n_redundant_shared_exp)]
+        elif self.tp_ffn == self.num_nodes:
+            self.shared_expert_ranks = ffn_comm_groups["tp_ffn"]
+        else:
+            raise NotImplementedError("Only full EP or full TP is supported for FFN blocks currently.")
         
-        # each redundant shared expert copy will process samples from a number of nodes that is equal to num_nodes // n_redundant_shared_exp
-        shared_exp_cluster_size = num_nodes // n_redundant_shared_exp
-
-        # shared_expert_ranks is a list of ranks that are assigned to each redundant shared expert copy. only these ranks will keep a copy of the redundant shared expert.
-        self.shared_expert_ranks = [i*shared_exp_cluster_size for i in range(n_redundant_shared_exp)]
-
     # every DP cluster has a master node that is responsible for broadcasting. 
     # this function returns True if the current rank is the master of its DP cluster.
     def is_dp_master(self):
@@ -62,6 +67,9 @@ class SystemConfig:
             assert self.dp_ffn == 1 and self.tp_ffn == 1, "If EP is used, do not use DP or TP for FFN (can still use them for ATTN)"
 
         assert self.dp_ffn == 1, "Currently, DP for FFN is not supported"
+        assert self.ep == self.num_nodes or self.tp_ffn == self.num_nodes, "Currently, either full EP or full TP is supported"
+        if self.tp_ffn == self.num_nodes: 
+            assert self.n_redundant_shared_exp == 1, "If full TP is used for FFN, n_redundant_shared_exp must be 1"
 
         attn_par_degrees = {"tp_attn": self.tp_attn, "sp": self.sp, "dp_attn": self.dp_attn, "pp":self.pp}
         attn_comm_groups, attn_ranks = get_comm_groups(self.num_nodes, attn_par_degrees)
