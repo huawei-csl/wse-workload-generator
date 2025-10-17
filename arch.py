@@ -30,7 +30,7 @@ class Model:
         return memory_footprint
 
     def forward(self, bsz, seqlen, ctx_len, iter_id):
-        assert bsz > self.dist_info.dp_attn, "dp_attn should not be smaller than batch size"
+        assert bsz >= self.dist_info.dp_attn, "dp_attn should not be smaller than batch size"
 
         self.new_iter(iter_id, bsz, seqlen)
 
