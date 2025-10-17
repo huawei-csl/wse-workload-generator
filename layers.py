@@ -841,14 +841,14 @@ class Dense(Layer):
         self.uid = uid
 
         self.dist_info = dist_info
-        inter_size_per_node = intceil(intermediate_size/dist_info.ep) 
+        inter_size_per_node = intceil(intermediate_size/dist_info.num_nodes) 
 
         self.ops = {}
         self.ops["up"] = Linear(uid+"_up", hidden_size, inter_size_per_node, dtype)
         self.ops["gate"] = Linear(uid+"_gate", hidden_size, inter_size_per_node, dtype)
         self.ops["down"] = Linear(uid+"_down", inter_size_per_node, hidden_size, dtype)
         
-        if dist_info.ep > 1: # we assume tp=ep for these layers
+        if dist_info.num_nodes > 1: # we assume tp=ep for these layers
             self.ops["allreduce"] = Allreduce(uid+"_ar", hidden_size, dist_info.ffn_comm_groups["ep"], dtype)
 
     def forward(self, bsz, stats=None):
