@@ -19,10 +19,10 @@
         "dp_attn": 7,
         "dp_ffn": 1,
         "tp_attn": 4,
-        "tp_ffn": 1,
+        "tp_ffn": 56,
         "pp": 1,
         "sp": 2,
-        "ep": 56,
+        "ep": 1,
         "n_redundant_shared_exp": 1,
         "expert_workload_model": "empirical_mmlu",
         "moe_comm": "multicast"
