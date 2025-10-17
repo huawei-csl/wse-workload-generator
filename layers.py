@@ -585,14 +585,20 @@ class GQABlock(Layer):
             self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
 
     def forward(self, bsz, seqlen, ctx_len, stats):
+        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        local_bsz = len(batch_ids)
+
         for opname in self.ops:
             if isinstance(self.ops[opname], SelfAttention):
-                self.ops[opname].forward(bsz, seqlen, ctx_len, stats=stats)
+                self.ops[opname].forward(local_bsz, seqlen, ctx_len, stats=stats)
             else:
-                self.ops[opname].forward(bsz*seqlen, stats=stats)
+                self.ops[opname].forward(local_bsz*seqlen, stats=stats)
                 
     def memory_footprint(self, bsz, ctx_len):
-        mem_size = sum([self.ops[opname].memory_footprint(bsz, ctx_len) for opname in self.ops])
+        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        local_bsz = len(batch_ids)
+
+        mem_size = sum([self.ops[opname].memory_footprint(local_bsz, ctx_len) for opname in self.ops])
         return mem_size # in bytes
 
 
@@ -629,28 +635,31 @@ class MLANaiveBlock(Layer):
             self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dtype)
 
     def forward(self, bsz, seqlen, ctx_len, stats):
+        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        local_bsz = len(batch_ids)
+
         assert ctx_len == 0, "Naive block should be used only for prefill"
         for opname in self.ops:
             if isinstance(self.ops[opname], MLANaiveAttention):
-                self.ops[opname].forward(bsz, seqlen, ctx_len, stats=stats)
+                self.ops[opname].forward(local_bsz, seqlen, ctx_len, stats=stats)
             else:
-                self.ops[opname].forward(bsz*seqlen, stats=stats)
+                self.ops[opname].forward(local_bsz*seqlen, stats=stats)
 
         # if the next layer is Dense, we need to multicast the output to all nodes that do not have a copy of the queries processed by this DP cluster
         # for example, if num_nodes = 16, dp_attn = 4, rank of this node is 0, then we multicast the queries to nodes [4,5,6,7,8,9,10,11,12,13,14,15] 
         if isinstance(self.next_layer, Dense):
             if self.dist_info.is_dp_master(): # only the master node in a DP cluster sends the multicast
                 dst_nodes = [i for i in range(self.dist_info.num_nodes) if i not in self.dist_info.dp_attn_cluster] # all nodes not in this DP cluster
-                Multicast(self.uid+"_multicast", vector_size=self.hidden_size*bsz*seqlen, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(stats=stats)
+                Multicast(self.uid+"_multicast", vector_size=self.hidden_size*local_bsz*seqlen, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(stats=stats)
             Barrier(self.uid+"_barrier", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
 
         # if the next layer is MoE, we need to multicast the output to the experts selected by the gate for the current batch
         elif isinstance(self.next_layer, MoE):
             if self.dist_info.moe_comm == "alltoall":
-                self.a2a_dispatch.forward(bsz*seqlen, stats=stats)
+                self.a2a_dispatch.forward(local_bsz*seqlen, stats=stats)
             elif self.dist_info.moe_comm == "multicast":
                 # batch ids processed by this DP cluster
-                batch_ids = list(range(self.dist_info.rank_dp_attn*bsz*seqlen, (self.dist_info.rank_dp_attn+1)*bsz*seqlen))
+                batch_ids = list(range(self.dist_info.rank_dp_attn*local_bsz*seqlen, (self.dist_info.rank_dp_attn+1)*local_bsz*seqlen))
                 for batch_id in batch_ids:
                     # get expert ids for this query
                     mapping = get_moe_gate_model().get_mapping_by_batchids(self.next_layer.uid, batch_id)
@@ -672,7 +681,10 @@ class MLANaiveBlock(Layer):
             raise NotImplementedError("Next layer type {} not implemented".format(type(self.next_layer)))
         
     def memory_footprint(self, bsz, ctx_len):
-        mem_size = sum([self.ops[opname].memory_footprint(bsz, ctx_len) for opname in self.ops])
+        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        local_bsz = len(batch_ids)
+    
+        mem_size = sum([self.ops[opname].memory_footprint(local_bsz, ctx_len) for opname in self.ops])
         return mem_size # in bytes
 
 
@@ -711,28 +723,31 @@ class MLAAbsorbBlock(Layer):
             self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dtype)
 
     def forward(self, bsz, seqlen, ctx_len, stats):
+        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        local_bsz = len(batch_ids)
+
         assert seqlen == 1, "Absorb block should be used only for decode"
         for opname in self.ops:
             if isinstance(self.ops[opname], MLAAbsorbAttention):
-                self.ops[opname].forward(bsz, seqlen, ctx_len, stats=stats)
+                self.ops[opname].forward(local_bsz, seqlen, ctx_len, stats=stats)
             else:
-                self.ops[opname].forward(bsz*seqlen, stats=stats)
+                self.ops[opname].forward(local_bsz*seqlen, stats=stats)
 
         # if the next layer is Dense, we need to multicast the output to all nodes that do not have a copy of the queries processed by this DP cluster
         # for example, if num_nodes = 16, dp_attn = 4, rank of this node is 0, then we multicast the queries to nodes [4,5,6,7,8,9,10,11,12,13,14,15] 
         if isinstance(self.next_layer, Dense):
             if self.dist_info.is_dp_master(): # only the master node in a DP cluster sends the multicast
                 dst_nodes = [i for i in range(self.dist_info.num_nodes) if i not in self.dist_info.dp_attn_cluster] # all nodes not in this DP cluster
-                Multicast(self.uid+"_multicast", vector_size=self.hidden_size*bsz*seqlen, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(stats=stats)
+                Multicast(self.uid+"_multicast", vector_size=self.hidden_size*local_bsz*seqlen, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(stats=stats)
             Barrier(self.uid+"_barrier", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
 
         # if the next layer is MoE, we need to multicast the output to the experts selected by the gate for the current batch
         elif isinstance(self.next_layer, MoE):
             if self.dist_info.moe_comm == "alltoall":
-                self.a2a_dispatch.forward(bsz*seqlen, stats=stats)
+                self.a2a_dispatch.forward(local_bsz*seqlen, stats=stats)
             elif self.dist_info.moe_comm == "multicast":
                 # batch ids processed by this DP cluster
-                batch_ids = list(range(self.dist_info.rank_dp_attn*bsz*seqlen, (self.dist_info.rank_dp_attn+1)*bsz*seqlen))
+                batch_ids = list(range(self.dist_info.rank_dp_attn*local_bsz*seqlen, (self.dist_info.rank_dp_attn+1)*local_bsz*seqlen))
                 for batch_id in batch_ids:
                     # get expert ids for this query
                     mapping = get_moe_gate_model().get_mapping_by_batchids(self.next_layer.uid, batch_id)
@@ -755,7 +770,10 @@ class MLAAbsorbBlock(Layer):
 
 
     def memory_footprint(self, bsz, ctx_len):
-        mem_size = sum([self.ops[opname].memory_footprint(bsz, ctx_len) for opname in self.ops])
+        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        local_bsz = len(batch_ids)
+
+        mem_size = sum([self.ops[opname].memory_footprint(local_bsz, ctx_len) for opname in self.ops])
         return mem_size # in bytes
 
 class MLABlock(Layer):
@@ -962,7 +980,7 @@ class MoE(Layer):
                     batch_ids = np.nonzero(mapping==e)[1]
 
                     # dest nodes for batch ids
-                    dest_node = get_bucketid_from_itemid(batch_ids, self.global_bsz, self.dist_info.num_nodes)
+                    dest_node = get_bucketid_from_itemid(batch_ids, bsz, self.dist_info.num_nodes)
                     # dest_node = np.floor(batch_ids / batch_size_per_node).astype(int)
                     logging.debug("dest_node: {}".format(dest_node))
 
@@ -984,7 +1002,7 @@ class MoE(Layer):
                 Barrier(self.uid+"_barrier_uc", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the unicast before proceeding
 
                 # once all unicasts are done, perform a multicast within the DP cluster for the next layer
-                batch_ids = get_itemids_from_bucketid(self.dist_info.rank, self.global_bsz, self.dist_info.num_nodes)
+                batch_ids = get_itemids_from_bucketid(self.dist_info.rank, bsz, self.dist_info.num_nodes)
                 Multicast(self.uid+"_multicast", vector_size=self.hidden_size*len(batch_ids), src=self.dist_info.rank, dst=self.dist_info.dp_attn_cluster, dtype=self.dtype).forward(stats=stats)
                 Barrier(self.uid+"_barrier_mc", nodes=self.dist_info.dp_attn_cluster).forward(stats=stats) # ensure all nodes in the DP cluster have received the multicast before proceeding
             else:
@@ -1007,14 +1025,16 @@ class LlamaDecodeLayer(Layer):
         self.ffn = FFN(layer_id+"_ffn", hidden_size, intermediate_size, dist_info, dtype)
 
     def forward(self, bsz, seqlen, ctx_len, stats):
-        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
-        bsz_per_device_attn = len(batch_ids)
+        # batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        # bsz_per_device_attn = len(batch_ids)
         # bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
-        self.attention.forward(bsz_per_device_attn, seqlen, ctx_len, stats=stats)
+        # self.attention.forward(bsz_per_device_attn, seqlen, ctx_len, stats=stats)
+        self.attention.forward(bsz, seqlen, ctx_len, stats=stats)
 
-        bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
+        # bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
         seqlen_per_device_ffn = intceil(seqlen/self.dist_info.sp) # This is only effective in prefill, seqlen=1 in decode anyway
-        self.ffn.forward(bsz_per_device_ffn*seqlen_per_device_ffn, stats=stats)
+        # self.ffn.forward(bsz_per_device_ffn*seqlen_per_device_ffn, stats=stats)
+        self.ffn.forward(bsz*seqlen_per_device_ffn, stats=stats)
 
     def memory_footprint(self, bsz, ctx_len):
         bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
@@ -1047,16 +1067,14 @@ class DSv3DecodeLayer(Layer):
         if not is_prefill:
             assert seqlen == 1
 
-        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
-        bsz_per_device_attn = len(batch_ids)
         # bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
-        self.attention.forward(bsz_per_device_attn, seqlen, ctx_len, stats=stats)
+        # self.attention.forward(bsz_per_device_attn, seqlen, ctx_len, stats=stats)
+        self.attention.forward(bsz, seqlen, ctx_len, stats=stats)
 
-        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_ffn, bsz, self.dist_info.dp_ffn)
-        bsz_per_device_ffn = len(batch_ids)
         # bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
         seqlen_per_device_ffn = intceil(seqlen/self.dist_info.sp) # This is only effective in prefill, seqlen=1 in decode anyway
-        self.ffn.forward(bsz_per_device_ffn*seqlen_per_device_ffn, stats=stats)
+        # self.ffn.forward(bsz_per_device_ffn*seqlen_per_device_ffn, stats=stats)
+        self.ffn.forward(bsz*seqlen_per_device_ffn, stats=stats)
 
     def memory_footprint(self, bsz, ctx_len):
         batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)

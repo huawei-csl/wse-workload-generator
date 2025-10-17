@@ -23,7 +23,7 @@
         "pp": 1,
         "sp": 2,
         "ep": 56,
-        "n_redundant_shared_exp": 4,
+        "n_redundant_shared_exp": 1,
         "expert_workload_model": "empirical_mmlu",
         "moe_comm": "multicast"
     }

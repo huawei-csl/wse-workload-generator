@@ -32,7 +32,6 @@ class DistInfo:
 
         self.dp_attn_cluster = [k for k,v in global_cfg.ranks["dp_attn"].items() if v == self.rank_dp_attn]
 
-
         # n_redundant_shared_exp is the number of redundant shared expert copies in the system.
         self.n_redundant_shared_exp = n_redundant_shared_exp
         assert num_nodes % n_redundant_shared_exp == 0, "Number of nodes must be divisible by n_redundant_shared_exp"
@@ -61,6 +60,8 @@ class SystemConfig:
 
         if self.ep > 1:
             assert self.dp_ffn == 1 and self.tp_ffn == 1, "If EP is used, do not use DP or TP for FFN (can still use them for ATTN)"
+
+        assert self.dp_ffn == 1, "Currently, DP for FFN is not supported"
 
         attn_par_degrees = {"tp_attn": self.tp_attn, "sp": self.sp, "dp_attn": self.dp_attn, "pp":self.pp}
         attn_comm_groups, attn_ranks = get_comm_groups(self.num_nodes, attn_par_degrees)
