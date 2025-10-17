@@ -15,14 +15,14 @@
     },
     "decode": 
     {
-        "num_nodes": 16,
-        "dp_attn": 8,
+        "num_nodes": 56,
+        "dp_attn": 7,
         "dp_ffn": 1,
-        "tp_attn": 2,
+        "tp_attn": 4,
         "tp_ffn": 1,
         "pp": 1,
-        "sp": 1,
-        "ep": 16,
+        "sp": 2,
+        "ep": 56,
         "n_redundant_shared_exp": 4,
         "expert_workload_model": "empirical_mmlu",
         "moe_comm": "multicast"

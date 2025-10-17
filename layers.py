@@ -5,6 +5,48 @@ from utils import dtype_to_byte, intceil
 from workload import get_moe_gate_model
 import numpy as np
 
+
+
+def get_itemids_from_bucketid(bucket_id, n_items, n_buckets):
+    assert bucket_id < n_buckets
+
+    n_items_per_bucket_low = n_items // n_buckets
+    n_items_per_bucket_high = n_items_per_bucket_low + 1
+
+    n_buckets_with_high = n_items - n_items_per_bucket_low * n_buckets
+    n_buckets_with_low = n_buckets - n_buckets_with_high
+
+    if bucket_id < n_buckets_with_high:
+        item_ids = list(range(bucket_id*n_items_per_bucket_high, (bucket_id+1)*n_items_per_bucket_high))
+    else:
+        start_expert_id = n_buckets_with_high * n_items_per_bucket_high + (bucket_id - n_buckets_with_high) * n_items_per_bucket_low
+        item_ids = list(range(start_expert_id, start_expert_id + n_items_per_bucket_low))
+
+    return item_ids
+
+
+def get_bucketid_from_itemid(item_id, n_items, n_buckets):
+    assert np.all(item_id < n_items)
+
+    n_items_per_bucket_low = n_items // n_buckets
+    n_items_per_bucket_high = n_items_per_bucket_low + 1
+
+    n_buckets_with_high = n_items - n_items_per_bucket_low * n_buckets
+    n_buckets_with_low = n_buckets - n_buckets_with_high
+
+    boundary_id = n_items_per_bucket_high * n_buckets_with_high
+
+    if isinstance(item_id, np.ndarray):
+        bucket_id = np.where(item_id < boundary_id, item_id // n_items_per_bucket_high, n_buckets_with_high + (item_id - boundary_id) // n_items_per_bucket_low)
+    else:
+        if item_id < boundary_id:
+            bucket_id = item_id // n_items_per_bucket_high
+        else:
+            bucket_id = n_buckets_with_high + (item_id - boundary_id) // n_items_per_bucket_low
+
+    return bucket_id
+
+
 class Layer:
     def __init__(self) -> None:
         pass
@@ -615,7 +657,8 @@ class MLANaiveBlock(Layer):
                     logging.debug("batch_id: {}, mapping: {}".format(batch_id, mapping))
 
                     # calculate with nodes the experts are located
-                    dst_nodes = sorted([self.next_layer.get_node_from_expert_id(expert_id) for expert_id in mapping.tolist()])
+                    dst_nodes = sorted([get_bucketid_from_itemid(expert_id, self.next_layer.n_experts, self.dist_info.ep) for expert_id in mapping.tolist()])
+                    # dst_nodes = sorted([self.next_layer.get_node_from_expert_id(expert_id) for expert_id in mapping.tolist()])
 
                     # remove repeating nodes from dst_nodes
                     dst_nodes = list(dict.fromkeys(dst_nodes))
@@ -696,7 +739,8 @@ class MLAAbsorbBlock(Layer):
                     logging.debug("batch_id: {}, mapping: {}".format(batch_id, mapping))
 
                     # calculate with nodes the experts are located
-                    dst_nodes = sorted([self.next_layer.get_node_from_expert_id(expert_id) for expert_id in mapping.tolist()])
+                    dst_nodes = sorted([get_bucketid_from_itemid(expert_id, self.next_layer.n_experts, self.dist_info.ep) for expert_id in mapping.tolist()])
+                    # dst_nodes = sorted([self.next_layer.get_node_from_expert_id(expert_id) for expert_id in mapping.tolist()])
 
                     # remove repeating nodes from dst_nodes
                     dst_nodes = list(dict.fromkeys(dst_nodes))
@@ -833,19 +877,46 @@ class MoE(Layer):
         ...
         '''
         rank_ep = self.dist_info.rank_ep
-        assert self.n_experts % self.dist_info.ep == 0
-        n_experts_per_device = self.n_experts // self.dist_info.ep
+        # assert self.n_experts % self.dist_info.ep == 0
 
-        local_experts = list(range(rank_ep*n_experts_per_device, (rank_ep+1)*n_experts_per_device))
+        if self.n_experts % self.dist_info.ep == 0:
+            n_experts_per_device = self.n_experts // self.dist_info.ep
+            local_experts = list(range(rank_ep*n_experts_per_device, (rank_ep+1)*n_experts_per_device))
+        else:
+            n_experts_per_device_low = self.n_experts // self.dist_info.ep
+            n_experts_per_device_high = n_experts_per_device_low + 1
+
+            n_devices_with_high = self.n_experts - n_experts_per_device_low * self.dist_info.num_nodes
+            n_devices_with_low = self.dist_info.num_nodes - n_devices_with_high
+
+            if rank_ep < n_devices_with_high:
+                local_experts = list(range(rank_ep*n_experts_per_device_high, (rank_ep+1)*n_experts_per_device_high))
+            else:
+                start_expert_id = n_devices_with_high * n_experts_per_device_high + (rank_ep - n_devices_with_high) * n_experts_per_device_low
+                local_experts = list(range(start_expert_id, start_expert_id + n_experts_per_device_low))
+
         return local_experts
 
     # get the node id (0~num_nodes-1) from expert id (0~n_experts-1)
     def get_node_from_expert_id(self, expert_id):
         assert expert_id < self.n_experts
-        n_experts_per_node = self.n_experts // self.dist_info.num_nodes
-        node_id = expert_id // n_experts_per_node
-        return node_id
+        if self.n_experts % self.dist_info.ep == 0:
+            n_experts_per_node = self.n_experts // self.dist_info.ep
+            node_id = expert_id // n_experts_per_node
+        else:
+            n_experts_per_node_low = self.n_experts // self.dist_info.ep
+            n_experts_per_node_high = n_experts_per_node_low + 1
 
+            n_nodes_with_high = self.n_experts - n_experts_per_node_low * self.dist_info.ep
+            n_nodes_with_low = self.dist_info.ep - n_nodes_with_high
+
+            boundary_expert_id = n_nodes_with_high * n_experts_per_node_high
+
+            if expert_id < boundary_expert_id:
+                node_id = expert_id // n_experts_per_node_high
+            else:
+                node_id = n_nodes_with_high + (expert_id - boundary_expert_id) // n_experts_per_node_low
+        return node_id
 
     '''
     bsz: total number of tokens per device (batch size per device x seq_len per device)
@@ -879,10 +950,10 @@ class MoE(Layer):
                 unicast_count = np.zeros(shape=[self.dist_info.dp_ffn*self.dist_info.tp_ffn*self.dist_info.ep], dtype=np.int64)
 
                 # global batch size
-                max_batch_size = bsz * self.dist_info.dp_ffn
+                # max_batch_size = bsz * self.dist_info.dp_ffn
 
                 # number of batch ids
-                batch_size_per_node = max_batch_size // self.dist_info.num_nodes
+                # batch_size_per_node = max_batch_size // self.dist_info.num_nodes
 
                 for e in self.experts:
                     mapping = get_moe_gate_model().get_expert_routings(self.uid)
@@ -891,7 +962,8 @@ class MoE(Layer):
                     batch_ids = np.nonzero(mapping==e)[1]
 
                     # dest nodes for batch ids
-                    dest_node = np.floor(batch_ids / batch_size_per_node).astype(int)
+                    dest_node = get_bucketid_from_itemid(batch_ids, self.global_bsz, self.dist_info.num_nodes)
+                    # dest_node = np.floor(batch_ids / batch_size_per_node).astype(int)
                     logging.debug("dest_node: {}".format(dest_node))
 
                     # count the number of occurances of each node in dest_node
@@ -909,10 +981,11 @@ class MoE(Layer):
                     if unicast_count[i] > 0:
                         Unicast(self.uid+"_unicast_"+str(i), vector_size=self.hidden_size*unicast_count[i], src=self.dist_info.rank, dst=i, dtype=self.dtype).forward(stats=stats)
 
-                Barrier(self.uid+"_barrier_uc", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
+                Barrier(self.uid+"_barrier_uc", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the unicast before proceeding
 
                 # once all unicasts are done, perform a multicast within the DP cluster for the next layer
-                Multicast(self.uid+"_multicast", vector_size=self.hidden_size*batch_size_per_node, src=self.dist_info.rank, dst=self.dist_info.dp_attn_cluster, dtype=self.dtype).forward(stats=stats)
+                batch_ids = get_itemids_from_bucketid(self.dist_info.rank, self.global_bsz, self.dist_info.num_nodes)
+                Multicast(self.uid+"_multicast", vector_size=self.hidden_size*len(batch_ids), src=self.dist_info.rank, dst=self.dist_info.dp_attn_cluster, dtype=self.dtype).forward(stats=stats)
                 Barrier(self.uid+"_barrier_mc", nodes=self.dist_info.dp_attn_cluster).forward(stats=stats) # ensure all nodes in the DP cluster have received the multicast before proceeding
             else:
                 raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
@@ -934,7 +1007,9 @@ class LlamaDecodeLayer(Layer):
         self.ffn = FFN(layer_id+"_ffn", hidden_size, intermediate_size, dist_info, dtype)
 
     def forward(self, bsz, seqlen, ctx_len, stats):
-        bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
+        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        bsz_per_device_attn = len(batch_ids)
+        # bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
         self.attention.forward(bsz_per_device_attn, seqlen, ctx_len, stats=stats)
 
         bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
@@ -971,19 +1046,27 @@ class DSv3DecodeLayer(Layer):
         is_prefill = ctx_len == 0
         if not is_prefill:
             assert seqlen == 1
-        
-        bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
+
+        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        bsz_per_device_attn = len(batch_ids)
+        # bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
         self.attention.forward(bsz_per_device_attn, seqlen, ctx_len, stats=stats)
 
-        bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
+        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_ffn, bsz, self.dist_info.dp_ffn)
+        bsz_per_device_ffn = len(batch_ids)
+        # bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
         seqlen_per_device_ffn = intceil(seqlen/self.dist_info.sp) # This is only effective in prefill, seqlen=1 in decode anyway
         self.ffn.forward(bsz_per_device_ffn*seqlen_per_device_ffn, stats=stats)
 
     def memory_footprint(self, bsz, ctx_len):
-        bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
+        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        bsz_per_device_attn = len(batch_ids)
+        # bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
         mem_size = self.attention.memory_footprint(bsz_per_device_attn, ctx_len)
 
-        bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
+        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_ffn, bsz, self.dist_info.dp_ffn)
+        bsz_per_device_ffn = len(batch_ids)
+        # bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
         mem_size += self.ffn.memory_footprint(bsz_per_device_ffn)
 
         return mem_size # in bytes
