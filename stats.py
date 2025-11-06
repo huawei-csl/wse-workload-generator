@@ -22,7 +22,8 @@ class RuntimeStats:
             "hbm_reads": hbm_reads, 
             "network_data": network_data, 
             "comm_group": "N/A" if comm_group is None else comm_group,
-            "dims": dims}
+            "dims": dims
+        }
 
     def sumUp(self):
         memory_footprint = sum([self.stats[self.iter][uid]["memory_footprint"] for uid in self.stats[self.iter]])

@@ -1,50 +1,35 @@
 import logging
 from typing import List
 
-from utils import dtype_to_byte, intceil
+import compute_graph
+from compute_graph import get_compute_graph
+
+from tensor import Tensor, concat
+from utils import dtype_to_byte, intceil, divide_equal
 from workload import get_moe_gate_model
 import numpy as np
 
 
+# def get_bucketid_from_itemid(item_id, n_items, n_buckets):
+#     assert np.all(item_id < n_items)
 
-def get_itemids_from_bucketid(bucket_id, n_items, n_buckets):
-    assert bucket_id < n_buckets
+#     n_items_per_bucket_low = n_items // n_buckets
+#     n_items_per_bucket_high = n_items_per_bucket_low + 1
 
-    n_items_per_bucket_low = n_items // n_buckets
-    n_items_per_bucket_high = n_items_per_bucket_low + 1
+#     n_buckets_with_high = n_items - n_items_per_bucket_low * n_buckets
+#     n_buckets_with_low = n_buckets - n_buckets_with_high
 
-    n_buckets_with_high = n_items - n_items_per_bucket_low * n_buckets
-    n_buckets_with_low = n_buckets - n_buckets_with_high
+#     boundary_id = n_items_per_bucket_high * n_buckets_with_high
 
-    if bucket_id < n_buckets_with_high:
-        item_ids = list(range(bucket_id*n_items_per_bucket_high, (bucket_id+1)*n_items_per_bucket_high))
-    else:
-        start_expert_id = n_buckets_with_high * n_items_per_bucket_high + (bucket_id - n_buckets_with_high) * n_items_per_bucket_low
-        item_ids = list(range(start_expert_id, start_expert_id + n_items_per_bucket_low))
+#     if isinstance(item_id, np.ndarray):
+#         bucket_id = np.where(item_id < boundary_id, item_id // n_items_per_bucket_high, n_buckets_with_high + (item_id - boundary_id) // n_items_per_bucket_low)
+#     else:
+#         if item_id < boundary_id:
+#             bucket_id = item_id // n_items_per_bucket_high
+#         else:
+#             bucket_id = n_buckets_with_high + (item_id - boundary_id) // n_items_per_bucket_low
 
-    return item_ids
-
-
-def get_bucketid_from_itemid(item_id, n_items, n_buckets):
-    assert np.all(item_id < n_items)
-
-    n_items_per_bucket_low = n_items // n_buckets
-    n_items_per_bucket_high = n_items_per_bucket_low + 1
-
-    n_buckets_with_high = n_items - n_items_per_bucket_low * n_buckets
-    n_buckets_with_low = n_buckets - n_buckets_with_high
-
-    boundary_id = n_items_per_bucket_high * n_buckets_with_high
-
-    if isinstance(item_id, np.ndarray):
-        bucket_id = np.where(item_id < boundary_id, item_id // n_items_per_bucket_high, n_buckets_with_high + (item_id - boundary_id) // n_items_per_bucket_low)
-    else:
-        if item_id < boundary_id:
-            bucket_id = item_id // n_items_per_bucket_high
-        else:
-            bucket_id = n_buckets_with_high + (item_id - boundary_id) // n_items_per_bucket_low
-
-    return bucket_id
+#     return bucket_id
 
 
 class Layer:
@@ -76,15 +61,22 @@ class Linear(Layer):
         self.out_features = out_features
         self.dtype = dtype
 
-    def forward(self, bsz, stats=None):
+    def forward(self, x, stats=None):
+        bsz, seqlen, hidden_dim = x.dims
+        assert hidden_dim == self.in_features, "Input hidden dim {} does not match in_features {}".format(hidden_dim, self.in_features)
+
         memory_footprint = self.memory_footprint()
-        num_ops = self.num_ops(bsz)
+        num_ops = self.num_ops(bsz*seqlen)
         hbm_reads = self.hbm_reads()
         network_data = self.network_data()
-        dims = self.get_dims(bsz)
+        dims = self.get_dims(bsz*seqlen)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
+        out = Tensor(self.uid + "_out", (bsz, seqlen, self.out_features))
         stats.append(self.uid, "Linear", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
+        get_compute_graph().add_node(self, [x], [out], attrs=None)
+
+        return out
 
     def memory_footprint(self, bsz=None, ctx_len=None):
         memory_footprint =  self.in_features * self.out_features * dtype_to_byte(self.dtype)
@@ -122,15 +114,23 @@ class GroupedLinear(Layer):
         self.out_features = out_features
         self.dtype = dtype
 
-    def forward(self, bsz, stats=None):
+    def forward(self, x, stats=None):
+        bsz, seqlen, n_local_heads, hidden_dim = x.dims
+        assert n_local_heads == self.n_groups, "Input n_local_heads {} does not match n_groups {}".format(n_local_heads, self.n_groups)
+        assert hidden_dim == self.in_features, "Input hidden dim {} does not match in_features {}".format(hidden_dim, self.in_features)
+
         memory_footprint = self.memory_footprint()
-        num_ops = self.num_ops(bsz)
+        num_ops = self.num_ops(bsz*seqlen)
         hbm_reads = self.hbm_reads()
         network_data = self.network_data()
-        dims = self.get_dims(bsz)
+        dims = self.get_dims(bsz*seqlen)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
+
+        out = Tensor(self.uid + "_out", (bsz, seqlen, n_local_heads, self.out_features))
         stats.append(self.uid, "GroupedLinear", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
+        get_compute_graph().add_node(self, [x], [out], attrs=None)
+        return out
 
     def memory_footprint(self, bsz=None, ctx_len=None):
         memory_footprint =  self.n_groups * self.in_features * self.out_features * dtype_to_byte(self.dtype)
@@ -164,15 +164,20 @@ class Allreduce(Layer):
         self.dtype = dtype
         self.comm_group = comm_group
 
-    def forward(self, bsz, stats=None):
+    def forward(self, x, stats=None):
+        bsz, seqlen, hidden_dim = x.dims
         memory_footprint = self.memory_footprint()
         num_ops = self.num_ops()
         hbm_reads = self.hbm_reads()
-        network_data = self.network_data(bsz)
-        dims = self.get_dims(bsz)
+        network_data = self.network_data(bsz*seqlen)
+        dims = self.get_dims(bsz*seqlen)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
+        
+        out = Tensor(self.uid + "_out", (bsz, seqlen, hidden_dim))
         stats.append(self.uid, "AllReduce", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group, dims=dims)
+        get_compute_graph().add_node(self, [x], [out], attrs=None)
+        return out
 
     def memory_footprint(self, bsz=None, ctx_len=None):
         return 0
@@ -203,16 +208,20 @@ class AlltoAll(Layer):
         self.dtype = dtype
         self.comm_group = list(range(cluster_size))
 
-    def forward(self, bsz, stats=None):
+    def forward(self, x, stats=None):
+        bsz, seqlen, hidden_dim = x.dims
         memory_footprint = self.memory_footprint()
         num_ops = self.num_ops()
         hbm_reads = self.hbm_reads()
-        network_data = self.network_data(bsz)
-        dims = self.get_dims(bsz)
+        network_data = self.network_data(bsz*seqlen)
+        dims = self.get_dims(bsz*seqlen)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
+        out = Tensor(self.uid + "_out", (bsz, seqlen, hidden_dim))
         stats.append(self.uid, "AlltoAll", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group, dims=dims)
-
+        get_compute_graph().add_node(self, [x], [out], attrs=None)
+        return out 
+    
     def memory_footprint(self, bsz=None, ctx_len=None):
         return 0
 
@@ -243,7 +252,9 @@ class Unicast(Layer):
         self.src = src
         self.dst = dst
 
-    def forward(self, stats=None):
+    def forward(self, x, stats=None):
+        bsz, seqlen, hidden_dim = x.dims
+        assert x.numel() == self.vector_size, "Input vector size {} does not match expected vector size {}".format(x.numel(), self.vector_size)
         memory_footprint = self.memory_footprint()
         num_ops = self.num_ops()
         hbm_reads = self.hbm_reads()
@@ -251,7 +262,12 @@ class Unicast(Layer):
         dims = self.get_dims()
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
+        
+        out = Tensor(self.uid + "_out", (bsz, seqlen, hidden_dim))
         stats.append(self.uid, "Unicast", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.dst, dims=dims)
+        get_compute_graph().add_node(self, [x], [out], attrs=None)
+
+        return out
 
     def memory_footprint(self, bsz=None, ctx_len=None):
         return 0
@@ -271,6 +287,51 @@ class Unicast(Layer):
         logging.debug("{}: network data size: {} B".format(self.uid, vecsize))
         return vecsize # in bytes
 
+class Multicast(Layer):
+    def __init__(self, uid, vector_size, src: int, dst: List[int], dtype) -> None:
+        super().__init__()
+        logging.debug("Multicast layer {} with vector size: {} src:{} dst:{}".format(uid, vector_size, src, dst))
+
+        self.uid = uid
+        self.vector_size = vector_size
+        self.dtype = dtype
+        self.src = src
+        self.dst = dst
+
+    def forward(self, x, stats=None):
+        bsz, seqlen, hidden_dim = x.dims
+        assert x.numel() == self.vector_size, "Input vector size {} does not match expected vector size {}".format(x.numel(), self.vector_size)
+        memory_footprint = self.memory_footprint()
+        num_ops = self.num_ops()
+        hbm_reads = self.hbm_reads()
+        network_data = self.network_data()
+        dims = self.get_dims()
+
+        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
+        
+        out = Tensor(self.uid + "_out", (bsz, seqlen, hidden_dim))
+        stats.append(self.uid, "Multicast", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.dst, dims=dims)
+        get_compute_graph().add_node(self, [x], [out], attrs=None)
+
+        return out 
+    
+    def memory_footprint(self, bsz=None, ctx_len=None):
+        return 0
+
+    def get_dims(self):
+        vec_dims = [self.vector_size,]
+        return str(vec_dims)
+    
+    def num_ops(self):
+        return 0
+
+    def hbm_reads(self):
+        return 0
+    
+    def network_data(self):
+        vecsize = self.vector_size * dtype_to_byte(self.dtype) # a vec of this size is sent from a single source to multiple destionations
+        logging.debug("{}: network data size: {} B".format(self.uid, vecsize))
+        return vecsize # in bytes
 
 class Barrier(Layer):
     def __init__(self, uid, nodes: List[int]) -> None:
@@ -305,47 +366,6 @@ class Barrier(Layer):
     def network_data(self):
         return 0
 
-
-class Multicast(Layer):
-    def __init__(self, uid, vector_size, src: int, dst: List[int], dtype) -> None:
-        super().__init__()
-        logging.debug("Multicast layer {} with vector size: {} src:{} dst:{}".format(uid, vector_size, src, dst))
-
-        self.uid = uid
-        self.vector_size = vector_size
-        self.dtype = dtype
-        self.src = src
-        self.dst = dst
-
-    def forward(self, stats=None):
-        memory_footprint = self.memory_footprint()
-        num_ops = self.num_ops()
-        hbm_reads = self.hbm_reads()
-        network_data = self.network_data()
-        dims = self.get_dims()
-
-        logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
-        stats.append(self.uid, "Multicast", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.dst, dims=dims)
-
-    def memory_footprint(self, bsz=None, ctx_len=None):
-        return 0
-
-    def get_dims(self):
-        vec_dims = [self.vector_size,]
-        return str(vec_dims)
-    
-    def num_ops(self):
-        return 0
-
-    def hbm_reads(self):
-        return 0
-    
-    def network_data(self):
-        vecsize = self.vector_size * dtype_to_byte(self.dtype) # a vec of this size is sent from a single source to multiple destionations
-        logging.debug("{}: network data size: {} B".format(self.uid, vecsize))
-        return vecsize # in bytes
-
-
 class SelfAttention(Layer):
     def __init__(self, uid, num_attention_heads, num_key_value_heads, head_dim, seq_parallel, dtype) -> None:
         super().__init__()
@@ -367,7 +387,7 @@ class SelfAttention(Layer):
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
         stats.append(self.uid, "SelfAttention", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
-
+        
     def memory_footprint(self, bsz, ctx_len):
         memory_footprint = 2 * bsz * intceil(ctx_len/self.seq_parallel) * self.num_key_value_heads * self.head_dim * dtype_to_byte(self.dtype) # KV-cache
         return memory_footprint  # KV-cache only, in bytes
@@ -499,7 +519,11 @@ class MLAAbsorbAttention(Layer):
         self.seq_parallel = seq_parallel
         self.dtype = dtype
 
-    def forward(self, bsz, seqlen, ctx_len=None, stats=None):
+    def forward(self, x, ctx_len=None, stats=None):
+        bsz, seqlen, n_local_heads, D = x.dims
+        assert n_local_heads == self.n_local_heads, "Input n_local_heads {} does not match n_local_heads {}".format(n_local_heads, self.n_local_heads)
+        assert D == self.kv_lora_rank + self.qk_rope_head_dim, "Input head dim {} does not match kv_lora_rank+qk_rope_head_dim {}".format(D, self.kv_lora_rank+self.qk_rope_head_dim)
+
         memory_footprint = self.memory_footprint(bsz, ctx_len)
         num_ops = self.num_ops(bsz, seqlen, ctx_len)
         hbm_reads = self.hbm_reads(bsz, ctx_len)
@@ -507,7 +531,11 @@ class MLAAbsorbAttention(Layer):
         dims = self.get_dims(bsz, seqlen, ctx_len)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
+        out = Tensor(self.uid + "_out", (bsz, seqlen, n_local_heads, self.kv_lora_rank))
         stats.append(self.uid, "MLAAbsorbAttention", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
+        get_compute_graph().add_node(self, [x], [out], attrs=None)
+
+        return out
 
     def memory_footprint(self, bsz, ctx_len):
         ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
@@ -634,7 +662,9 @@ class MLANaiveBlock(Layer):
         if dist_info.moe_comm == "alltoall":
             self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dtype)
 
-    def forward(self, bsz, seqlen, ctx_len, stats):
+    def forward(self, x, ctx_len, stats):
+        bsz, seqlen, _ = x.dims
+
         batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
         local_bsz = len(batch_ids)
 
@@ -667,7 +697,6 @@ class MLANaiveBlock(Layer):
 
                     # calculate with nodes the experts are located
                     dst_nodes = sorted([get_bucketid_from_itemid(expert_id, self.next_layer.n_experts, self.dist_info.ep) for expert_id in mapping.tolist()])
-                    # dst_nodes = sorted([self.next_layer.get_node_from_expert_id(expert_id) for expert_id in mapping.tolist()])
 
                     # remove repeating nodes from dst_nodes
                     dst_nodes = list(dict.fromkeys(dst_nodes))
@@ -699,22 +728,25 @@ class MLAAbsorbBlock(Layer):
         self.hidden_size = hidden_size
         self.dtype = dtype
 
-        n_local_heads = intceil(n_heads / dist_info.tp_attn)
-
-        qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
+        self.n_local_heads = intceil(n_heads / dist_info.tp_attn)
+        self.qk_nope_head_dim = qk_nope_head_dim
+        self.qk_rope_head_dim = qk_rope_head_dim
+        self.qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
+        self.kv_lora_rank = kv_lora_rank
+        self.v_head_dim = v_head_dim
 
         self.ops = {}
         self.ops["wq_a"] = Linear(uid+"_wqa", hidden_size, q_lora_rank, dtype)
-        self.ops["wq_b"] = Linear(uid+"_wqb", q_lora_rank, n_local_heads*qk_head_dim, dtype)
+        self.ops["wq_b"] = Linear(uid+"_wqb", q_lora_rank, self.n_local_heads*self.qk_head_dim, dtype)
         self.ops["wkv_a"] = Linear(uid+"_wkva", hidden_size, kv_lora_rank+qk_rope_head_dim, dtype)
-        self.ops["wkv_b1"] = GroupedLinear(uid+"_wkvb1", n_local_heads, qk_nope_head_dim, kv_lora_rank, dtype)
-        self.ops["absorb_attn"] = MLAAbsorbAttention(uid+"_absorbattn", n_local_heads, kv_lora_rank, qk_rope_head_dim, dist_info.sp, dtype)
+        self.ops["wkv_b1"] = GroupedLinear(uid+"_wkvb1", self.n_local_heads, qk_nope_head_dim, kv_lora_rank, dtype)
+        self.ops["absorb_attn"] = MLAAbsorbAttention(uid+"_absorbattn", self.n_local_heads, kv_lora_rank, qk_rope_head_dim, dist_info.sp, dtype)
         if dist_info.sp > 1:
             # Allreduce to aggregate attention output from sequence parallel devices
-            self.ops["allreduce_sp"] = Allreduce(uid+"_ar_sp", n_local_heads * qk_rope_head_dim, dist_info.attn_comm_groups["sp"], dtype)
+            self.ops["allreduce_sp"] = Allreduce(uid+"_ar_sp", self.n_local_heads * qk_rope_head_dim, dist_info.attn_comm_groups["sp"], dtype)
         
-        self.ops["wkv_b2"] = GroupedLinear(uid+"_wkvb2", n_local_heads, kv_lora_rank, v_head_dim, dtype)
-        self.ops["wo"] = Linear(uid+"_wo", n_local_heads*v_head_dim, hidden_size, dtype)
+        self.ops["wkv_b2"] = GroupedLinear(uid+"_wkvb2", self.n_local_heads, kv_lora_rank, v_head_dim, dtype)
+        self.ops["wo"] = Linear(uid+"_wo", self.n_local_heads*v_head_dim, hidden_size, dtype)
         if dist_info.tp_attn > 1:
             # Allreduce to aggregate output from tensor parallel devices
             self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
@@ -722,16 +754,42 @@ class MLAAbsorbBlock(Layer):
         if dist_info.moe_comm == "alltoall":
             self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dtype)
 
-    def forward(self, bsz, seqlen, ctx_len, stats):
-        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
-        local_bsz = len(batch_ids)
-
+    def forward(self, x, ctx_len, stats):
+        bsz, seqlen, _ = x.dims
         assert seqlen == 1, "Absorb block should be used only for decode"
-        for opname in self.ops:
-            if isinstance(self.ops[opname], MLAAbsorbAttention):
-                self.ops[opname].forward(local_bsz, seqlen, ctx_len, stats=stats)
-            else:
-                self.ops[opname].forward(local_bsz*seqlen, stats=stats)
+
+        # batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        # local_bsz = len(batch_ids)
+        local_bsz = bsz 
+
+        # x = x.slice(batch_ids, axis=0)
+
+        kv = self.ops["wkv_a"].forward(x, stats=stats)
+        #TODO: implement KV update
+
+        q = self.ops["wq_a"].forward(x, stats=stats)
+        q = self.ops["wq_b"].forward(q, stats=stats)
+        q = q.view([local_bsz, seqlen, self.n_local_heads, self.qk_head_dim])
+        q_nope, q_pe = q.split([self.qk_nope_head_dim, self.qk_rope_head_dim], axis=-1)
+        q_nope = self.ops["wkv_b1"].forward(q_nope, stats=stats)
+        q = concat([q_nope, q_pe], axis=-1)
+
+        attn_out = self.ops["absorb_attn"].forward(q, ctx_len, stats=stats)
+        
+        if self.dist_info.sp > 1:
+            attn_out = attn_out.view([local_bsz, seqlen, self.n_local_heads*self.kv_lora_rank])
+            attn_out = self.ops["allreduce_sp"].forward(attn_out, stats=stats)
+            attn_out = attn_out.view([local_bsz, seqlen, self.n_local_heads, self.kv_lora_rank])
+
+        x = self.ops["wkv_b2"].forward(attn_out, stats=stats)
+
+        x = x.view([local_bsz, seqlen, self.n_local_heads*self.v_head_dim])
+        y = self.ops["wo"].forward(x, stats=stats)
+
+        if self.dist_info.tp_attn > 1:
+            y = self.ops["allreduce_tp"].forward(y, stats=stats)
+
+        return y
 
         # if the next layer is Dense, we need to multicast the output to all nodes that do not have a copy of the queries processed by this DP cluster
         # for example, if num_nodes = 16, dp_attn = 4, rank of this node is 0, then we multicast the queries to nodes [4,5,6,7,8,9,10,11,12,13,14,15] 
@@ -755,7 +813,6 @@ class MLAAbsorbBlock(Layer):
 
                     # calculate with nodes the experts are located
                     dst_nodes = sorted([get_bucketid_from_itemid(expert_id, self.next_layer.n_experts, self.dist_info.ep) for expert_id in mapping.tolist()])
-                    # dst_nodes = sorted([self.next_layer.get_node_from_expert_id(expert_id) for expert_id in mapping.tolist()])
 
                     # remove repeating nodes from dst_nodes
                     dst_nodes = list(dict.fromkeys(dst_nodes))
@@ -764,13 +821,12 @@ class MLAAbsorbBlock(Layer):
                 Barrier(self.uid+"_barrier", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
             else:
                 raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
-        
         else:
             raise NotImplementedError("Next layer type {} not implemented for MLAAbsorbBlock".format(type(self.next_layer)))
 
-
     def memory_footprint(self, bsz, ctx_len):
-        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        # batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        batch_ids = self.dist_info.get_local_batchids("attn")
         local_bsz = len(batch_ids)
 
         mem_size = sum([self.ops[opname].memory_footprint(local_bsz, ctx_len) for opname in self.ops])
@@ -787,13 +843,13 @@ class MLABlock(Layer):
         self.MLA_naive = MLANaiveBlock(uid+"_naive", hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, dist_info, next_layer, dtype)
         self.MLA_absorb = MLAAbsorbBlock(uid+"_absorb", hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, dist_info, next_layer, dtype)
 
-    def forward(self, bsz, seqlen, ctx_len, stats):
+    def forward(self, x, ctx_len, stats):
         is_prefill = ctx_len == 0
 
         if is_prefill:
-            self.MLA_naive.forward(bsz, seqlen, ctx_len, stats)
+            return self.MLA_naive.forward(x, ctx_len, stats)
         else:
-            self.MLA_absorb.forward(bsz, seqlen, ctx_len, stats)
+            return self.MLA_absorb.forward(x, ctx_len, stats)
 
     def set_next_layer(self, next_layer):
         self.MLA_naive.next_layer = next_layer
@@ -822,9 +878,19 @@ class FFN(Layer):
         if dist_info.tp_ffn > 1:
             self.ops["allreduce"] = Allreduce(uid+"_ar", hidden_size, dist_info.ffn_comm_groups["tp_ffn"], dtype)
 
-    def forward(self, bsz, stats=None):
-        for opname in self.ops:
-            self.ops[opname].forward(bsz, stats=stats)
+    def forward(self, x, stats=None):
+        x1 = self.ops["up"].forward(x, stats=stats)
+        x2 = self.ops["gate"].forward(x, stats=stats)
+        #TODO: implement element-wise multiplication and activation
+
+        y = self.ops["down"].forward(x1, stats=stats)
+
+        if self.dist_info.tp_ffn > 1:
+            y = self.ops["allreduce"].forward(y, stats=stats)
+        
+        return y
+        # for opname in self.ops:
+        #     self.ops[opname].forward(bsz, stats=stats)
 
     def memory_footprint(self, bsz=None, ctx_len=None):
         mem_size = sum([self.ops[opname].memory_footprint() for opname in self.ops])
@@ -851,9 +917,17 @@ class Dense(Layer):
         if dist_info.num_nodes > 1: # we assume tp=ep for these layers
             self.ops["allreduce"] = Allreduce(uid+"_ar", hidden_size, dist_info.ffn_comm_groups["ep"], dtype)
 
-    def forward(self, bsz, stats=None):
-        for opname in self.ops:
-            self.ops[opname].forward(bsz, stats=stats)
+    def forward(self, x, stats=None):
+        x1 = self.ops["up"].forward(x, stats=stats)
+        x2 = self.ops["gate"].forward(x, stats=stats)
+        #TODO: implement element-wise multiplication and activation
+
+        y = self.ops["down"].forward(x1, stats=stats)
+
+        if self.dist_info.num_nodes > 1:
+            y = self.ops["allreduce"].forward(y, stats=stats)
+        
+        return y
 
     def memory_footprint(self, bsz, ctx_len=None):
         mem_size = sum([self.ops[opname].memory_footprint(bsz) for opname in self.ops])
@@ -875,8 +949,11 @@ class MoE(Layer):
         if self.dist_info.ep > 1 and self.dist_info.moe_comm == "alltoall":
             self.a2a_combine = AlltoAll(uid+"_a2a_comb", hidden_size, self.dist_info.num_nodes, dtype)
 
+        self.expertid_to_node = self.dist_info.get_expert_mapping(self.n_experts)
+        local_experts = [expert_id for expert_id in range(self.n_experts) if self.expertid_to_node[expert_id] == self.dist_info.rank_ep]
+
         self.experts = {}
-        for i in self.map_experts():
+        for i in local_experts:
             self.experts[i] = FFN(uid+"_exp_"+str(i), hidden_size, moe_intermediate_size, dist_info, dtype)
         
         intermediate_size = moe_intermediate_size * n_shared_experts
@@ -885,93 +962,84 @@ class MoE(Layer):
         if self.dist_info.rank in self.dist_info.shared_expert_ranks:
             self.shared_expert = FFN(uid+"_shared_exp", hidden_size, intermediate_size, dist_info, dtype)
 
-    def map_experts(self):
-        '''
-        expert mapping:
-        assume n_experts=256, n_nodes=64, ep=64
-        node0: experts 0-3
-        node1: experts 4-7
-        node2: experts 8-11
-        ...
-        '''
-        rank_ep = self.dist_info.rank_ep
-        # assert self.n_experts % self.dist_info.ep == 0
 
-        if self.n_experts % self.dist_info.ep == 0:
-            n_experts_per_device = self.n_experts // self.dist_info.ep
-            local_experts = list(range(rank_ep*n_experts_per_device, (rank_ep+1)*n_experts_per_device))
-        else:
-            n_experts_per_device_low = self.n_experts // self.dist_info.ep
-            n_experts_per_device_high = n_experts_per_device_low + 1
+    def forward(self, x, stats):
+        bsz, seqlen, hidden_dim = x.dims
 
-            n_devices_with_high = self.n_experts - n_experts_per_device_low * self.dist_info.num_nodes
-            n_devices_with_low = self.dist_info.num_nodes - n_devices_with_high
+        # after attention allreduce, each node within the DP cluster has identical data
+        # therefore, only the master node in the DP cluster dispatches the data to experts
+        # TODO: distribute this task to all nodes in the DP cluster for better load balancing
+        if self.dist_info.is_dp_master():
+            if self.dist_info.moe_comm == "alltoall":
+                raise NotImplementedError
+                self.a2a_dispatch.forward(bsz*seqlen, stats=stats)
+            elif self.dist_info.moe_comm == "multicast":
+                # batch ids processed by this DP cluster
+                batch_ids = self.dist_info.get_local_batchids("attn")
 
-            if rank_ep < n_devices_with_high:
-                local_experts = list(range(rank_ep*n_experts_per_device_high, (rank_ep+1)*n_experts_per_device_high))
+                for batch_id in batch_ids:
+                    # get expert ids for this query
+                    mapping = get_moe_gate_model().get_mapping_by_batchids(self.uid, batch_id)
+                    logging.debug("batch_id: {}, mapping: {}".format(batch_id, mapping))
+
+                    # calculate with nodes the experts are located
+                    dst_nodes = [self.expertid_to_node[expert_id] for expert_id in mapping.tolist()]
+
+                    # Add shared expert node to the destination
+                    dst_nodes.append(self.dist_info.batch_to_shared_exp[batch_id])
+
+                    # remove repeating nodes from dst_nodes
+                    dst_nodes = list(dict.fromkeys(dst_nodes))
+
+                    # remove the nodes from the same DP cluster as they already have the data
+                    dst_nodes = [node for node in dst_nodes if node not in self.dist_info.dp_attn_cluster]
+
+                    # sort the dst_nodes for consistent ordering
+                    dst_nodes = sorted(dst_nodes)
+
+                    if len(dst_nodes) > 0:
+                        Multicast(self.uid+"_multicast_"+str(batch_id), vector_size=self.hidden_size, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(
+                            x.slice([batch_id], axis=0, uid=x.uid + f"_slice[{batch_id}]"), stats=stats)
+
+                Barrier(self.uid+"_barrier", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
             else:
-                start_expert_id = n_devices_with_high * n_experts_per_device_high + (rank_ep - n_devices_with_high) * n_experts_per_device_low
-                local_experts = list(range(start_expert_id, start_expert_id + n_experts_per_device_low))
+                raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
 
-        return local_experts
-
-    # get the node id (0~num_nodes-1) from expert id (0~n_experts-1)
-    def get_node_from_expert_id(self, expert_id):
-        assert expert_id < self.n_experts
-        if self.n_experts % self.dist_info.ep == 0:
-            n_experts_per_node = self.n_experts // self.dist_info.ep
-            node_id = expert_id // n_experts_per_node
-        else:
-            n_experts_per_node_low = self.n_experts // self.dist_info.ep
-            n_experts_per_node_high = n_experts_per_node_low + 1
-
-            n_nodes_with_high = self.n_experts - n_experts_per_node_low * self.dist_info.ep
-            n_nodes_with_low = self.dist_info.ep - n_nodes_with_high
-
-            boundary_expert_id = n_nodes_with_high * n_experts_per_node_high
-
-            if expert_id < boundary_expert_id:
-                node_id = expert_id // n_experts_per_node_high
-            else:
-                node_id = n_nodes_with_high + (expert_id - boundary_expert_id) // n_experts_per_node_low
-        return node_id
-
-    '''
-    bsz: total number of tokens per device (batch size per device x seq_len per device)
-    '''
-    def forward(self, bsz, stats):
+        recv_batch_ids = {}
+        exp_outs = {}
         total_moe_num_tokens_per_device = 0
         for e in self.experts:
-            # total number of tokens gated to this expert
-            bsz_for_expert_i = get_moe_gate_model().get_bincounts(layer_id=self.uid, expert_id=e)
-            logging.debug("expert {} num of routed samples: {}".format(e, bsz_for_expert_i))
+            expert_routings = get_moe_gate_model().get_expert_routings(layer_id=self.uid)
+            recv_batch_ids[e] = np.where(expert_routings==e)[1]
 
-            if bsz_for_expert_i > 0:
-                self.experts[e].forward(bsz_for_expert_i, stats=stats)
+            logging.debug("expert {} num of routed samples: {}".format(e, len(recv_batch_ids[e])))
 
-            total_moe_num_tokens_per_device += bsz_for_expert_i
+            if len(recv_batch_ids[e]) > 0:
+                x_recv = concat([Tensor(x.uid + f"_slice[{batch_id}]", [1, seqlen, hidden_dim]) for batch_id in recv_batch_ids[e]], axis=0)
+                exp_outs[e] = self.experts[e].forward(x_recv, stats=stats)
+
+            total_moe_num_tokens_per_device += len(recv_batch_ids[e])
 
         logging.debug("Total number of routed samples for device {}: {}".format(self.dist_info.rank_ep, total_moe_num_tokens_per_device))
 
         # if this node holds a copy of the shared expert
         if self.shared_expert:
-            bsz_for_shared_expert = intceil(bsz / self.dist_info.n_redundant_shared_exp)
-            self.shared_expert.forward(bsz_for_shared_expert, stats=stats)
+            batch_ids_for_shared = [batch_id for batch_id, mapped_shared in self.dist_info.batch_to_shared_exp.items() if self.dist_info.rank == mapped_shared]
+            x_for_shared = concat([Tensor(x.uid + f"_slice[{batch_id}]", [1, seqlen, hidden_dim]) for batch_id in batch_ids_for_shared], axis=0)
+
+            self.shared_expert.forward(x_for_shared, stats=stats)
+            logging.debug("Shared expert on node {} processed {} samples".format(self.dist_info.rank, len(batch_ids_for_shared)))
 
         if self.dist_info.ep > 1:
             if self.dist_info.moe_comm == "alltoall":
                 self.a2a_combine.forward(total_moe_num_tokens_per_device, stats=stats)
             elif self.dist_info.moe_comm == "multicast":
                 # after MoE layer, gather the outputs in specific nodes to sum them
+                # at the moment, we gather them at the dp master of each DP cluster
                 # we merge all unicasts to the same dst node
-                # count how many vector needs to go to each node
-                unicast_count = np.zeros(shape=[self.dist_info.dp_ffn*self.dist_info.tp_ffn*self.dist_info.ep], dtype=np.int64)
+                # TODO: distribute this task to all nodes in the DP cluster for better load balancing
 
-                # global batch size
-                # max_batch_size = bsz * self.dist_info.dp_ffn
-
-                # number of batch ids
-                # batch_size_per_node = max_batch_size // self.dist_info.num_nodes
+                batchid_dst = {i: [] for i in range(self.dist_info.num_nodes)}
 
                 for e in self.experts:
                     mapping = get_moe_gate_model().get_expert_routings(self.uid)
@@ -979,34 +1047,45 @@ class MoE(Layer):
                     # batch ids routed to expert e
                     batch_ids = np.nonzero(mapping==e)[1]
 
-                    # dest nodes for batch ids
-                    dest_node = get_bucketid_from_itemid(batch_ids, bsz, self.dist_info.num_nodes)
-                    # dest_node = np.floor(batch_ids / batch_size_per_node).astype(int)
-                    logging.debug("dest_node: {}".format(dest_node))
+                    # which dp cluster the dst node belongs to
+                    dp_ranks = self.dist_info.get_dp_rank_from_batchids(batch_ids, "attn")
 
-                    # count the number of occurances of each node in dest_node
-                    bincount = np.bincount(dest_node, minlength=self.dist_info.num_nodes)
+                    # we send the expert outputs to the dp master node of the corresponding dp cluster
+                    dst_nodes = [self.dist_info.get_dp_master(dp_rank, "attn") for dp_rank in dp_ranks]
+                    
+                    for batch_id, dst_node in zip(batch_ids, dst_nodes):
+                        batchid_dst[dst_node].append(batch_id)
 
-                    # accumulate the count to unicast_count
-                    unicast_count += bincount
+                logging.debug("gather expert outputs at dst_nodes: {}".format(batchid_dst))
 
-                for i in range(self.dist_info.num_nodes):
+                for i in batchid_dst:
                     # if dst node is itself, skip
                     if i == self.dist_info.rank:
                         continue
-
+                    
                     # if there are tokens to send to node i, do unicast
-                    if unicast_count[i] > 0:
-                        Unicast(self.uid+"_unicast_"+str(i), vector_size=self.hidden_size*unicast_count[i], src=self.dist_info.rank, dst=i, dtype=self.dtype).forward(stats=stats)
+                    if len(batchid_dst[i]) > 0:
+                        unicast_tensor = concat([x.slice([batch_id], axis=0, uid=x.uid + f"_slice[{batch_id}]") for batch_id in batchid_dst[i]], axis=0)
+                        Unicast(self.uid+"_unicast_"+str(i), vector_size=unicast_tensor.numel(), src=self.dist_info.rank, dst=i, dtype=self.dtype).forward(
+                            unicast_tensor, stats=stats)
 
                 Barrier(self.uid+"_barrier_uc", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the unicast before proceeding
 
+                batch_ids = self.dist_info.get_local_batchids("attn")
+                out_tensor = Tensor(self.uid + "_out", [len(batch_ids), seqlen, hidden_dim])
+                # out_tensor = concat([x.slice([batch_id], axis=0, uid=x.uid + f"_slice[{batch_id}]") for batch_id in batch_ids], axis=0)
+
                 # once all unicasts are done, perform a multicast within the DP cluster for the next layer
-                batch_ids = get_itemids_from_bucketid(self.dist_info.rank, bsz, self.dist_info.num_nodes)
-                Multicast(self.uid+"_multicast", vector_size=self.hidden_size*len(batch_ids), src=self.dist_info.rank, dst=self.dist_info.dp_attn_cluster, dtype=self.dtype).forward(stats=stats)
+                # batch_ids = get_itemids_from_bucketid(self.dist_info.rank, bsz, self.dist_info.num_nodes)
+                if self.dist_info.is_dp_master():
+                    Multicast(self.uid+"_multicast", vector_size=self.hidden_size*len(batch_ids), src=self.dist_info.rank, dst=self.dist_info.dp_attn_cluster, dtype=self.dtype).forward(
+                        out_tensor, stats=stats)
+                
                 Barrier(self.uid+"_barrier_mc", nodes=self.dist_info.dp_attn_cluster).forward(stats=stats) # ensure all nodes in the DP cluster have received the multicast before proceeding
             else:
                 raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
+
+        return out_tensor
 
     def memory_footprint(self, bsz=None, ctx_len=None):
         mem_size = sum([self.experts[e].memory_footprint() for e in self.experts])
@@ -1024,7 +1103,8 @@ class LlamaDecodeLayer(Layer):
         self.attention = GQABlock(layer_id+"_attn", hidden_size, num_attention_heads, num_key_value_heads, dist_info, dtype)
         self.ffn = FFN(layer_id+"_ffn", hidden_size, intermediate_size, dist_info, dtype)
 
-    def forward(self, bsz, seqlen, ctx_len, stats):
+    def forward(self, queries, ctx_len, stats):
+        bsz, seqlen, _ = queries.dims
         # batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
         # bsz_per_device_attn = len(batch_ids)
         # bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
@@ -1051,6 +1131,7 @@ class DSv3DecodeLayer(Layer):
         super().__init__()
         logging.info("Creating Decode layer {}".format(layer_id))
 
+        self.layer_id = layer_id
         self.dist_info = dist_info
 
         self.attention = MLABlock(layer_id+"_attn", hidden_size, q_lora_rank, kv_lora_rank, n_heads, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, dist_info, next_layer=None, dtype=dtype)
@@ -1062,27 +1143,43 @@ class DSv3DecodeLayer(Layer):
 
         self.attention.set_next_layer(self.ffn)
 
-    def forward(self, bsz, seqlen, ctx_len, stats):
+    def forward(self, x, ctx_len, stats):
+        bsz, seqlen, _ = x.dims
+
         is_prefill = ctx_len == 0
         if not is_prefill:
             assert seqlen == 1
 
-        # bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
         # self.attention.forward(bsz_per_device_attn, seqlen, ctx_len, stats=stats)
-        self.attention.forward(bsz, seqlen, ctx_len, stats=stats)
+        x = self.attention.forward(x, ctx_len, stats=stats)
 
-        # bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
-        seqlen_per_device_ffn = intceil(seqlen/self.dist_info.sp) # This is only effective in prefill, seqlen=1 in decode anyway
+        # if is_prefill and self.dist_info.sp > 1:
+        #     local_seqlens = divide_equal(seqlen, self.dist_info.sp)
+        #     start = sum(local_seqlens[:self.dist_info.rank_sp])
+        #     end = start + local_seqlens[self.dist_info.rank_sp]
+        #     assert end > start
+        #     x = x.slice(list(range(start, end)), axis=1)
+
+        # seqlen_per_device_ffn = intceil(seqlen/self.dist_info.sp) # This is only effective in prefill, seqlen=1 in decode anyway
         # self.ffn.forward(bsz_per_device_ffn*seqlen_per_device_ffn, stats=stats)
-        self.ffn.forward(bsz*seqlen_per_device_ffn, stats=stats)
+        # self.ffn.forward(bsz*seqlen_per_device_ffn, stats=stats)
+        self.ffn.forward(x, stats=stats)
+
+        return Tensor(self.layer_id+"_out", x.dims)
+        
+    def set_global_bsz(self, global_bsz):
+        self.attention.set_global_bsz(global_bsz)
+        self.ffn.set_global_bsz(global_bsz)
 
     def memory_footprint(self, bsz, ctx_len):
-        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        # batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
+        batch_ids = self.dist_info.get_local_batchids("attn")
         bsz_per_device_attn = len(batch_ids)
         # bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
         mem_size = self.attention.memory_footprint(bsz_per_device_attn, ctx_len)
 
-        batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_ffn, bsz, self.dist_info.dp_ffn)
+        # batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_ffn, bsz, self.dist_info.dp_ffn)
+        batch_ids = self.dist_info.get_local_batchids("ffn")
         bsz_per_device_ffn = len(batch_ids)
         # bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
         mem_size += self.ffn.memory_footprint(bsz_per_device_ffn)
@@ -1097,8 +1194,8 @@ class LMHead(Layer):
         vocab_size_per_device = intceil(vocab_size/dist_info.num_nodes)
         self.head = Linear(uid=layer_id+"_head", in_features=hidden_size, out_features=vocab_size_per_device, dtype=dtype)
 
-    def forward(self, bsz, stats):
-        self.head.forward(bsz, stats=stats)
+    def forward(self, x, stats):
+        self.head.forward(x, stats=stats)
 
     def memory_footprint(self):
         mem_size = self.head.memory_footprint()

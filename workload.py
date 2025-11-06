@@ -9,12 +9,12 @@ class MoEGateModel:
     def __init__(self, num_experts_per_tok, n_routed_experts, layer_ids, workload_model) -> None:
         self.num_experts_per_tok = num_experts_per_tok
         self.n_routed_experts = n_routed_experts
-        self.layer_ids = layer_ids
+        self.layer_ids = [self.strip_layerid(layer_id) for layer_id in layer_ids]
         self.workload_model = workload_model
 
         if workload_model == "uniform":
             self.probs = {}
-            for l, layer_id in enumerate(layer_ids):
+            for l, layer_id in enumerate(self.layer_ids):
                 self.probs[layer_id] = np.ones(shape=[n_routed_experts])/n_routed_experts
 
         elif workload_model == "identical":
@@ -25,7 +25,7 @@ class MoEGateModel:
                 bincounts = json.load(f)
 
             self.probs = {}
-            for l, layer_id in enumerate(layer_ids):
+            for l, layer_id in enumerate(self.layer_ids):
                 self.probs[layer_id] = bincounts[str(l)] / np.sum(bincounts[str(l)])
         else:
             raise NotImplementedError
@@ -54,13 +54,22 @@ class MoEGateModel:
             for layer_id in self.layer_ids:
                 np.random.shuffle(routings)
                 self.expert_routings[self.iter_id][layer_id] = routings.reshape([self.num_experts_per_tok, bsz*seqlen])
-        else:
+                
+        elif self.workload_model == "empirical_mmlu":
             self.expert_routings[self.iter_id] = {}
             for layer_id in self.layer_ids:
-                self.expert_routings[self.iter_id][layer_id] = np.random.choice(a=np.arange(0,self.n_routed_experts), size=[self.num_experts_per_tok, bsz*seqlen], replace=True, p=self.probs[layer_id])
+                self.expert_routings[self.iter_id][layer_id] = np.zeros(shape=[self.num_experts_per_tok, bsz*seqlen], dtype=np.int32)
+                for i in range(bsz*seqlen):
+                    self.expert_routings[self.iter_id][layer_id][:, i] = np.random.choice(a=np.arange(0,self.n_routed_experts), size=[self.num_experts_per_tok], replace=False, p=self.probs[layer_id])
+        else:
+            raise NotImplementedError
     
+    def strip_layerid(self, layer_id):
+        # Strip the prefix (e.g., "rank0_") from the layer ID
+        return "_".join(layer_id.split("_")[1:])
+
     def get_expert_routings(self, layer_id):
-        return self.expert_routings[self.iter_id][layer_id]
+        return self.expert_routings[self.iter_id][self.strip_layerid(layer_id)]
 
     def get_bincounts(self, layer_id, expert_id):
         expert_routings = self.get_expert_routings(layer_id)
