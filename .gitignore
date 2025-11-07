@@ -1,6 +1,7 @@
 __pycache__
 out/
 out.log
-traces/
 .vscode/launch.json
-out_graph/
+traces
+out_graph
+.vscode/launch.json
