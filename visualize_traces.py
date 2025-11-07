@@ -33,44 +33,83 @@ def draw_wafer(core_grid, node_grid):
                                     linewidth=2, edgecolor='black', facecolor='none')
             plt.gca().add_patch(rect)
 
-def draw_arrow(src, dst, color="red"):
+def draw_arrow(src, dst, color="red", alpha=0.1):
     # Draw the arrow
     plt.annotate(
         "",  # No text for the annotation
         xy=(dst[1], dst[0]),  # Destination (x, y)
         xytext=(src[1], src[0]),  # Source (x, y)
-        arrowprops=dict(arrowstyle="->", color=color, lw=1, alpha=0.1),  # Arrow style
+        arrowprops=dict(arrowstyle="-", color=color, lw=1, alpha=min(alpha, 1.0)),  # Arrow style
     )
 
-def get_core_coord(core_id, core_grid, offset=[0,0]):
-    row = core_id // core_grid[1] + offset[0]
-    col = core_id % core_grid[1] + offset[1]
+def register_move(traffic, src, dst, size):
+    key = (tuple(src), tuple(dst))
+    if key not in traffic:
+        traffic[key] = 0
+    traffic[key] += size
+
+def get_2d_coord(core_id, core_grid):
+    assert core_id < core_grid[0] * core_grid[1]
+
+    row = core_id // core_grid[1]
+    col = core_id % core_grid[1]
     return [row, col]
 
-ops = ["attn_absorb_wqa", "attn_absorb_wqb", "attn_absorb_wkva", "attn_absorb_wkvb1", "attn_absorb_absorbattn", "attn_absorb_wkvb2", "attn_absorb_wo", "moe"]
+
+def get_glob_coord(core_id, core_grid, node_grid):
+    num_cores_per_node = core_grid[0] * core_grid[1]
+    node_id = core_id // num_cores_per_node
+    local_core_id = core_id % num_cores_per_node
+
+    node_r, node_c = get_2d_coord(node_id, node_grid)
+    local_core_r, local_core_c = get_2d_coord(local_core_id, core_grid)
+
+    glob_r = node_r * core_grid[0] + local_core_r
+    glob_c = node_c * core_grid[1] + local_core_c
+
+    return [glob_r, glob_c]
+
+ops_to_axis = {
+    "attn_absorb_wqa": 0, 
+    "attn_absorb_wqb": 1, 
+    "attn_absorb_wkva": 2, 
+    "attn_absorb_wkvb1": 3, 
+    "attn_absorb_absorbattn": 4, 
+    "attn_absorb_wkvb2": 5, 
+    "attn_absorb_wo": 6, 
+    "attn_absorb_multicast": 7, 
+    "moe_shared_exp": 8,
+    "moe_exp": 8,
+    "moe_unicast": 9,
+    "moe_multicast": 10
+}
 
 if __name__=="__main__":
     decode_iter = 0
 
-    num_nodes = 16
-    node_grid = [4, 4]
+    num_nodes = 8
+    node_grid = [4, 2]
     assert num_nodes == node_grid[0] * node_grid[1]
     num_cores = 24
     core_grid = [6, 4]
     assert num_cores == core_grid[0] * core_grid[1]
 
-    fig, axs = plt.subplots(1, len(ops), figsize=(len(ops)*10, 10))
+    n_axes = max([ops_to_axis[k] for k in ops_to_axis.keys()])+1
+    fig, axs = plt.subplots(1, n_axes, figsize=(n_axes*10, 10))
     for ax in axs:
         plt.sca(ax)
         draw_wafer(core_grid, node_grid)
 
     layer = "decode5"
 
+    traffic = {op: {} for op in ops_to_axis}
+
     for node_id in range(num_nodes):
-        node_coord = get_core_coord(node_id, node_grid)
-        core_offset = [node_coord[0] * core_grid[0], node_coord[1] * core_grid[1]]
+        print("Generating traces for node {}...".format(node_id))
 
         for core_id in range(num_cores):
+            global_core_id = core_id + node_id * num_cores
+
             fname = f"./traces/decode/node_{node_id}/decode{decode_iter}/core_{core_id}.csv"
             with open(fname, "r") as f:
                 lines = f.readlines()
@@ -78,29 +117,41 @@ if __name__=="__main__":
                     line = line.strip().split(" ")
 
                     is_found = False
-                    for op in ops:
+                    for op in ops_to_axis:
                         if f"{layer}_{op}" in line[1]:
                             is_found = True
                             break
                     
                     if not is_found:
                         raise ValueError(f"Op {line[1]} not found")
-                        # continue
-
-                    op_ind = ops.index(op)
-                    plt.sca(axs[op_ind])
-                    plt.title(f"{layer}_{op}")
-
+                    
                     if line[0] == "READ":
-                        src = get_core_coord(int(line[2]), core_grid, core_offset)
-                        dst = get_core_coord(core_id, core_grid, core_offset)
-                        draw_arrow(src, dst, color="red")
+                        src = get_glob_coord(int(line[2]), core_grid, node_grid)
+                        dst = get_glob_coord(global_core_id, core_grid, node_grid)
+                        n_bytes = int(line[3])
+                        register_move(traffic[op], src, dst, n_bytes)
                     elif line[0] == "WRITE":
-                        src = get_core_coord(core_id, core_grid, core_offset)
-                        dst = get_core_coord(int(line[2]), core_grid, core_offset) 
-                        draw_arrow(src, dst, color="purple")
+                        src = get_glob_coord(global_core_id, core_grid, node_grid)
+                        dst = get_glob_coord(int(line[2]), core_grid, node_grid)
+                        n_bytes = int(line[3])
+                        register_move(traffic[op], src, dst, n_bytes)
+                    elif line[0] == "COPY":
+                        src = get_glob_coord(int(line[2]), core_grid, node_grid)
+                        dst = get_glob_coord(int(line[4]), core_grid, node_grid)
+                        n_bytes = int(line[5])
+                        register_move(traffic[op], src, dst, n_bytes)
 
+    for op in ops_to_axis:
+        axis = axs[ops_to_axis[op]]
+        plt.sca(axis)
+        plt.title(f"{layer}_{op}")
+        total_bytes = 0
+        for (src, dst), count in traffic[op].items():
+            total_bytes += count
+            draw_arrow(src, dst, color="red", alpha=0.01*count/1024)
+        plt.xlabel(f"Total traffic: {total_bytes/1024/1024:.2f} MB")
+        
     plt.tight_layout()
-    plt.savefig("wafer.png", dpi=300)
+    plt.savefig("wafer.png", dpi=200)
 
 
