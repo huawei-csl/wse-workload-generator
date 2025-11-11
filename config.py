@@ -202,6 +202,10 @@ class SystemConfig:
             cfg = json.load(f)[mode]
     
         self.num_nodes = cfg["num_nodes"]
+        self.node_grid = cfg["node_grid"]
+        self.core_grid = cfg["core_grid"]
+        assert self.num_nodes == self.node_grid[0] * self.node_grid[1], "num_nodes does not match node_grid"
+        
         self.dp_attn = cfg["dp_attn"]
         self.dp_ffn = cfg["dp_ffn"]
         self.tp_attn = cfg["tp_attn"]

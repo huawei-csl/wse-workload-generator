@@ -68,12 +68,17 @@ if __name__=="__main__":
     nodes = nodes_to_simulate(args.nodes, decode_cfg.num_nodes)
 
     decode_models = []
+    footprint_list = []
     for rank in nodes:
         model = build_model(model_config, decode_cfg.get_dist_info(rank), args.dtype, out_dir)
         footprint = model.memory_footprint(args.bsz, args.prefill_len+args.decode_len)
         logging.info("rank: {} HBM footprint: {:.2f} GB".format(rank, footprint/1024/1024/1024))
         decode_models.append(model)
-    
+        footprint_list.append(footprint)
+
+    with open(args.outdir+"footprint.json", "w") as f:
+        json.dump(footprint_list, f)
+
     generator.decode(decode_models, args.bsz, args.prefill_len, args.decode_len, args.simplified_decode)
         
 

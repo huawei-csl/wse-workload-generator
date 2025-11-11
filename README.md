@@ -23,10 +23,16 @@ Supported architectures:
 1) Llama GQA
 2) DeepSeekv3
 
+Install:
+```
+pip install -e .
+```
+
 To run the simulation:
 1) Make sure the config.json (downloaded from HF) for the target model is stored under configs/
 2) Enter system properties in system.json
 3) Run main.py with the desired arguments. For example:   
+
 ```
 python main.py --model_config configs/deepseekv3.json --system_config configs/system.json --bsz 1024 --prefill_len 2048 --decode_len 10 --only_decode 1 --simplified_decode 1 --dtype fp16
 ```
@@ -45,7 +51,3 @@ Run sanity checks, which perform decode for various parallelization strategies a
 ```
 py.test
 ```
-
-
-
-TODOs: 

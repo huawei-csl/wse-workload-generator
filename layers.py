@@ -751,9 +751,6 @@ class MLAAbsorbBlock(Layer):
             # Allreduce to aggregate output from tensor parallel devices
             self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
 
-        if dist_info.moe_comm == "alltoall":
-            self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dtype)
-
     def forward(self, x, ctx_len, stats):
         bsz, seqlen, _ = x.dims
         assert seqlen == 1, "Absorb block should be used only for decode"
@@ -946,6 +943,9 @@ class MoE(Layer):
         self.dist_info = dist_info
         self.dtype = dtype 
 
+        if self.dist_info.ep > 1 and dist_info.moe_comm == "alltoall":
+            self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dtype)
+
         if self.dist_info.ep > 1 and self.dist_info.moe_comm == "alltoall":
             self.a2a_combine = AlltoAll(uid+"_a2a_comb", hidden_size, self.dist_info.num_nodes, dtype)
 
@@ -966,14 +966,16 @@ class MoE(Layer):
     def forward(self, x, stats):
         bsz, seqlen, hidden_dim = x.dims
 
-        # after attention allreduce, each node within the DP cluster has identical data
-        # therefore, only the master node in the DP cluster dispatches the data to experts
-        # TODO: distribute this task to all nodes in the DP cluster for better load balancing
-        if self.dist_info.is_dp_master():
-            if self.dist_info.moe_comm == "alltoall":
-                raise NotImplementedError
-                self.a2a_dispatch.forward(bsz*seqlen, stats=stats)
-            elif self.dist_info.moe_comm == "multicast":
+        if self.dist_info.moe_comm == "alltoall":
+            x_all = Tensor(x.uid + f"_dispatch", [get_moe_gate_model().global_bsz, seqlen, hidden_dim])
+            self.a2a_dispatch.forward(x_all, stats=stats)
+        elif self.dist_info.moe_comm == "multicast":
+            
+            # after attention allreduce, each node within the DP cluster has identical data
+            # therefore, only the master node in the DP cluster dispatches the data to experts
+            # TODO: distribute this task to all nodes in the DP cluster for better load balancing
+            if self.dist_info.is_dp_master():
+                
                 # batch ids processed by this DP cluster
                 batch_ids = self.dist_info.get_local_batchids("attn")
 
@@ -998,12 +1000,12 @@ class MoE(Layer):
                     dst_nodes = sorted(dst_nodes)
 
                     if len(dst_nodes) > 0:
-                        Multicast(self.uid+"_multicast_"+str(batch_id), vector_size=self.hidden_size, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(
+                        Multicast(self.uid+"_multicast_exp_"+str(batch_id), vector_size=self.hidden_size, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(
                             x.slice([batch_id], axis=0, uid=x.uid + f"_slice[{batch_id}]"), stats=stats)
 
                 Barrier(self.uid+"_barrier", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
-            else:
-                raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
+        else:
+            raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
 
         recv_batch_ids = {}
         exp_outs = {}
@@ -1032,7 +1034,8 @@ class MoE(Layer):
 
         if self.dist_info.ep > 1:
             if self.dist_info.moe_comm == "alltoall":
-                self.a2a_combine.forward(total_moe_num_tokens_per_device, stats=stats)
+                x_all = Tensor(x.uid + f"_combine", [get_moe_gate_model().global_bsz*(self.num_experts_per_tok+self.n_shared_experts), seqlen, hidden_dim])
+                out_tensor = self.a2a_combine.forward(x_all, stats=stats)
             elif self.dist_info.moe_comm == "multicast":
                 # after MoE layer, gather the outputs in specific nodes to sum them
                 # at the moment, we gather them at the dp master of each DP cluster
@@ -1078,7 +1081,7 @@ class MoE(Layer):
                 # once all unicasts are done, perform a multicast within the DP cluster for the next layer
                 # batch_ids = get_itemids_from_bucketid(self.dist_info.rank, bsz, self.dist_info.num_nodes)
                 if self.dist_info.is_dp_master():
-                    Multicast(self.uid+"_multicast", vector_size=self.hidden_size*len(batch_ids), src=self.dist_info.rank, dst=self.dist_info.dp_attn_cluster, dtype=self.dtype).forward(
+                    Multicast(self.uid+"_multicast_dp", vector_size=self.hidden_size*len(batch_ids), src=self.dist_info.rank, dst=self.dist_info.dp_attn_cluster, dtype=self.dtype).forward(
                         out_tensor, stats=stats)
                 
                 Barrier(self.uid+"_barrier_mc", nodes=self.dist_info.dp_attn_cluster).forward(stats=stats) # ensure all nodes in the DP cluster have received the multicast before proceeding
@@ -1166,10 +1169,6 @@ class DSv3DecodeLayer(Layer):
         self.ffn.forward(x, stats=stats)
 
         return Tensor(self.layer_id+"_out", x.dims)
-        
-    def set_global_bsz(self, global_bsz):
-        self.attention.set_global_bsz(global_bsz)
-        self.ffn.set_global_bsz(global_bsz)
 
     def memory_footprint(self, bsz, ctx_len):
         # batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)

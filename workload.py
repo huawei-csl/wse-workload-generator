@@ -34,6 +34,7 @@ class MoEGateModel:
         self.expert_routings = {}
         
     def new_iter(self, iter_id, bsz, seqlen):
+        self.global_bsz = bsz
         self.iter_id = iter_id
 
         if self.iter_id in self.expert_routings:

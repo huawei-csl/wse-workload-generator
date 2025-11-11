@@ -1,0 +1,6 @@
+{
+    "Linear": [16, null, 16],
+    "GroupedLinear": [1, 16, null, 16],
+    "AttentionQ": [1, 1, null, null],
+    "AttentionKV": [1, 128, null]
+}

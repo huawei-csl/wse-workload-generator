@@ -139,7 +139,7 @@ class DeepSeekv3(Model):
 
             self.layers.append(
                     DSv3DecodeLayer(
-                        layer_id=f"rank{self.dist_info.rank}_" + "decode" + str(l), 
+                        layer_id="decode" + str(l), 
                         hidden_size=self.hidden_size, 
                         q_lora_rank=self.q_lora_rank, 
                         kv_lora_rank=self.kv_lora_rank, 
@@ -158,14 +158,14 @@ class DeepSeekv3(Model):
                     )
                 )
             
-        self.head = LMHead(layer_id=f"rank{self.dist_info.rank}_" + "lm_head",
+        self.head = LMHead(layer_id="lm_head",
                 hidden_size=self.hidden_size,
                 vocab_size=self.vocab_size,
                 dist_info=dist_info,
                 dtype=dtype
             )
 
-        moe_layer_ids = [f"rank{self.dist_info.rank}_" + "decode" + str(l) + "_moe" for l in range(self.num_dense_layers, self.num_hidden_layers)]
+        moe_layer_ids = ["decode" + str(l) + "_moe" for l in range(self.num_dense_layers, self.num_hidden_layers)]
         self.moe_gate_model = get_moe_gate_model(self.num_experts_per_tok, self.n_routed_experts, moe_layer_ids, dist_info.expert_workload_model)
 
     def set_global_bsz(self, global_bsz):

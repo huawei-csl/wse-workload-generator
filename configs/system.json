@@ -2,6 +2,8 @@
     "prefill": 
     {
         "num_nodes": 8,
+        "node_grid": [4,4],
+        "core_grid": [6,6],
         "dp_attn": 1,
         "dp_ffn": 4,
         "tp_attn": 4,
@@ -15,14 +17,16 @@
     },
     "decode": 
     {
-        "num_nodes": 56,
-        "dp_attn": 7,
+        "num_nodes": 16,
+        "node_grid": [4,4],
+        "core_grid": [6,6],
+        "dp_attn": 4,
         "dp_ffn": 1,
         "tp_attn": 4,
-        "tp_ffn": 56,
+        "tp_ffn": 1,
         "pp": 1,
-        "sp": 2,
-        "ep": 1,
+        "sp": 1,
+        "ep": 16,
         "n_redundant_shared_exp": 1,
         "expert_workload_model": "empirical_mmlu",
         "moe_comm": "multicast"

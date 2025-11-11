@@ -5,3 +5,5 @@ out.log
 traces
 out_graph
 .vscode/launch.json
+*.egg-info
+wafer.png
