@@ -37,7 +37,7 @@ To run the simulation:
 python main.py --model_config configs/deepseekv3.json --system_config configs/system.json --bsz 1024 --prefill_len 2048 --decode_len 10 --only_decode 1 --simplified_decode 1 --dtype fp16
 ```
 
-The simulator will generate various system requirements (i.e., **# of flops, memory reads, network requirements**) for each node and for each inference step (prefill + decode) as csv files under **out/**
+The tool will generate various system requirements (i.e., **# of flops, memory reads, network requirements**) for each node and for each inference step (prefill + decode) as csv files under **out/**
 
 The logs are written to **./out.log**
 
@@ -46,6 +46,18 @@ For argument descriptions, run:
 python main.py --help
 ```
 
+4) Run the core-level trace generator
+```
+python core_level/generate_traces.py --layers decode5 --iter decode0 --dtype fp16
+```
+The trace generator will generate core-level traces under **./traces**
+
+5) Run the visualization tool
+```
+python visualize_traces.py 
+```
+
+The visualization tool will generate **wafer.png**.
 
 Run sanity checks, which perform decode for various parallelization strategies and check if the results are expected or not:
 ```

@@ -77,21 +77,6 @@ def map_with_quadrants(node_id, quad_grid, node_grid):
     coords = (sub_coords[0] + quadrant[0]*quad_dims[0], sub_coords[1] + quadrant[1]*quad_dims[1])
     return coords
 
-# node_grid = [4, 6]
-# quad_grid = [2, 2]
-
-# num_nodes = node_grid[0] * node_grid[1]
-# for node_id in range(num_nodes):
-#     coords = map_with_quadrants(node_id, quad_grid, node_grid)
-
-# for r in range(node_grid[0]):
-#     for c in range(node_grid[1]):
-#         ind = coords.index((r,c))
-#         print(f"{ind:2} ", end="")
-#     print("")
-
-# exit()
-
 def get_glob_coord(core_id, core_grid, node_grid):
     num_cores_per_node = core_grid[0] * core_grid[1]
     node_id = core_id // num_cores_per_node
@@ -162,15 +147,23 @@ op_info = {
     "moe_multicast_dp": {"ax": 11, "op_type": "Comm"}
 }
 
-if __name__=="__main__":
-    decode_iter = 0
 
-    num_nodes = 16
-    node_grid = [4, 4]
-    assert num_nodes == node_grid[0] * node_grid[1]
-    num_cores = 36
-    core_grid = [6, 6]
-    assert num_cores == core_grid[0] * core_grid[1]
+
+def visaulize_traces(args):
+    mode = "decode" if args.iter.startswith("decode") else "prefill"
+    with open(args.system_config, "r") as f:
+        cfg = json.load(f)[mode]
+    
+        node_grid = cfg["node_grid"]
+        core_grid = cfg["core_grid"]
+
+    num_nodes = node_grid[0] * node_grid[1]
+    num_cores = core_grid[0] * core_grid[1]
+
+    #TODO: Generate these values in main.py and store it in a file.
+    bsz = 128
+    seqlen_kv = 2048
+    expected_vals = get_expected_vals(bsz, seqlen_kv, "./configs/deepseekv3.json")
 
     n_axes = max([op_info[k]["ax"] for k in op_info.keys()])+1
     fig, axs = plt.subplots(1, n_axes, figsize=(n_axes*10, 10))
@@ -178,7 +171,7 @@ if __name__=="__main__":
         plt.sca(ax)
         draw_wafer(core_grid, node_grid)
 
-    layer = "decode5"
+    layer = args.layers
 
     stats = {op: {"bytes": {}, "byte_hop": 0, "input": 0, "weight": 0, "kv": 0, "output": 0} for op in op_info}
 
@@ -188,7 +181,7 @@ if __name__=="__main__":
         for core_id in range(num_cores):
             global_core_id = core_id + node_id * num_cores
 
-            fname = f"./traces/decode/node_{node_id}/decode{decode_iter}/core_{core_id}.csv"
+            fname = f"./traces/decode/node_{node_id}/{args.iter}/core_{core_id}.csv"
             with open(fname, "r") as f:
                 lines = f.readlines()
                 for line in lines:
@@ -264,10 +257,6 @@ if __name__=="__main__":
         total_mb = input_mb + weight_mb + output_mb
         print(f"  {layer}_{op}: input={input_mb:.2f} MB, weight={weight_mb:.2f} MB, kv={kv_mb:.2f} MB, output={output_mb:.2f} MB, total={total_mb:.2f} MB")
 
-    bsz = 128
-    seqlen_kv = 2048
-    expected_vals = get_expected_vals(bsz, seqlen_kv, "./configs/deepseekv3.json")
-
     for op in op_info:
         axis = axs[op_info[op]["ax"]]
         plt.sca(axis)
@@ -301,4 +290,13 @@ if __name__=="__main__":
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.savefig("wafer.png", dpi=200)
 
+import argparse
+if __name__=="__main__":
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument("--system_config", type=str, default="configs/system.json", help="config file path for system parameters")
+    argparser.add_argument("--layers", type=str, default="decode5", help="layer to generate traces for. Supports only a single layer., e.g., 'decode5'")
+    argparser.add_argument("--iter", type=str, default="decode0", help="which iteration to generate traces for. e.g., 'prefill', 'decode0'")
+    argparser.add_argument("--log", choices=["debug", "info", "error"], default="info", help="logging level")
+    args = argparser.parse_args()
 
+    visaulize_traces(args)
