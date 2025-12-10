@@ -26,7 +26,6 @@ class ComputeGraph:
             writer.writerows([{"uid":"uid", "op_type":"Op Type", "inputs":"Inputs", "outputs":"Outputs", "attrs":"Attributes"}])
             writer.writerows([{"uid": uid} | self.nodes[uid] for uid in self.nodes])
 
-
 compute_graph = None
 
 def get_compute_graph():

@@ -55,8 +55,7 @@ class MoEGateModel:
             for layer_id in self.layer_ids:
                 np.random.shuffle(routings)
                 self.expert_routings[self.iter_id][layer_id] = routings.reshape([self.num_experts_per_tok, bsz*seqlen])
-                
-        elif self.workload_model == "empirical_mmlu":
+        elif self.workload_model in ["empirical_mmlu", "uniform"]:
             self.expert_routings[self.iter_id] = {}
             for layer_id in self.layer_ids:
                 self.expert_routings[self.iter_id][layer_id] = np.zeros(shape=[self.num_experts_per_tok, bsz*seqlen], dtype=np.int32)
@@ -64,7 +63,7 @@ class MoEGateModel:
                     self.expert_routings[self.iter_id][layer_id][:, i] = np.random.choice(a=np.arange(0,self.n_routed_experts), size=[self.num_experts_per_tok], replace=False, p=self.probs[layer_id])
         else:
             raise NotImplementedError
-    
+        
     def strip_layerid(self, layer_id):
         # Strip the prefix (e.g., "rank0_") from the layer ID
         return "_".join(layer_id.split("_")[1:])

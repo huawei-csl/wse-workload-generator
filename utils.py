@@ -52,6 +52,11 @@ def divide_equal(val, n_div):
 def colored_text(txt, color=None):
     return  '\033[92m' + str(txt) + '\033[0m'
 
+def hash_string(s, num_digits=8):
+    import hashlib
+    return hashlib.md5(s.encode(), usedforsecurity=False).hexdigest().upper()[:num_digits]
+
+
 if __name__=="__main__":
     parts = divide_equal(63, 4)
     print(parts)

@@ -59,7 +59,8 @@ class Model:
 
         for l in range(len(self.layers)):
             x = self.layers[l].forward(x, ctx_len, self.stats)
-        self.head.forward(x, self.stats)
+        if self.head:
+            self.head.forward(x, self.stats)
 
         if self.out_dir:
             if is_prefill:
@@ -75,7 +76,7 @@ class Model:
                 get_compute_graph().dump(f"{self.out_dir}_graph/node_{self.dist_info.rank}/decode{str(iter_id-1)}.csv")
 
 class Llama(Model):
-    def __init__(self, model_config, dist_info, dtype, out_dir) -> None:
+    def __init__(self, model_config, dist_info, dtype, layer_ids, out_dir) -> None:
         super().__init__(model_config, dist_info, dtype, out_dir)
 
         self.dist_info = dist_info
@@ -91,9 +92,14 @@ class Llama(Model):
 
         self.layers = []
         for l in range(dist_info.rank_pp*num_layers_per_device, (dist_info.rank_pp+1)*num_layers_per_device):
+
+            layer_id = "decode" + str(l)
+            if "all" not in layer_ids and layer_id not in layer_ids:
+                continue
+
             self.layers.append(
                 LlamaDecodeLayer(
-                    layer_id="decode" + str(l), 
+                    layer_id=layer_id, 
                     hidden_size=self.hidden_size, 
                     num_attention_heads=self.num_attention_heads, 
                     num_key_value_heads=self.num_key_value_heads,
@@ -102,14 +108,16 @@ class Llama(Model):
                     dtype=dtype
                 )
             )
-        self.head = LMHead(layer_id="lm_head",
-                hidden_size=self.hidden_size,
-                vocab_size=self.vocab_size,
-                dist_info=dist_info,
-                dtype=dtype)
+
+        if "all" in layer_ids or "lm_head" in layer_ids:
+            self.head = LMHead(layer_id="lm_head",
+                    hidden_size=self.hidden_size,
+                    vocab_size=self.vocab_size,
+                    dist_info=dist_info,
+                    dtype=dtype)
 
 class DeepSeekv3(Model):
-    def __init__(self, model_config, dist_info, dtype, out_dir) -> None:
+    def __init__(self, model_config, dist_info, dtype, layer_ids, out_dir) -> None:
         super().__init__(model_config, dist_info, dtype, out_dir)
 
         self.dist_info = dist_info
@@ -137,9 +145,13 @@ class DeepSeekv3(Model):
         for l in range(dist_info.rank_pp*num_layers_per_device, (dist_info.rank_pp+1)*num_layers_per_device):
             is_moe = l >= self.num_dense_layers 
 
+            layer_id = "decode" + str(l)
+            if "all" not in layer_ids and layer_id not in layer_ids:
+                continue
+
             self.layers.append(
                     DSv3DecodeLayer(
-                        layer_id="decode" + str(l), 
+                        layer_id=layer_id, 
                         hidden_size=self.hidden_size, 
                         q_lora_rank=self.q_lora_rank, 
                         kv_lora_rank=self.kv_lora_rank, 
@@ -158,12 +170,15 @@ class DeepSeekv3(Model):
                     )
                 )
             
-        self.head = LMHead(layer_id="lm_head",
-                hidden_size=self.hidden_size,
-                vocab_size=self.vocab_size,
-                dist_info=dist_info,
-                dtype=dtype
-            )
+        if "all" in layer_ids or "lm_head" in layer_ids:
+            self.head = LMHead(layer_id="lm_head",
+                    hidden_size=self.hidden_size,
+                    vocab_size=self.vocab_size,
+                    dist_info=dist_info,
+                    dtype=dtype
+                )
+        else:
+            self.head = None
 
         moe_layer_ids = ["decode" + str(l) + "_moe" for l in range(self.num_dense_layers, self.num_hidden_layers)]
         self.moe_gate_model = get_moe_gate_model(self.num_experts_per_tok, self.n_routed_experts, moe_layer_ids, dist_info.expert_workload_model)
@@ -180,7 +195,7 @@ def get_arch(arch):
     else:
         raise NotImplementedError
 
-def build_model(model_config, dist_info, dtype, out_dir):
+def build_model(model_config, dist_info, dtype, layer_ids, out_dir):
     arch = get_arch(model_config['architectures'][0])
-    return arch(model_config, dist_info, dtype, out_dir)
+    return arch(model_config, dist_info, dtype, layer_ids, out_dir)
 

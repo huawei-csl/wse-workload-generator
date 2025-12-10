@@ -36,6 +36,7 @@ if __name__=="__main__":
     argparser.add_argument("--only_decode", type=int, choices=[0,1], default=1, help="1: skips prefill, 0: run both prefill and decode")
     argparser.add_argument("--simplified_decode", type=int, choices=[0,1], default=1, help="0: full decode run, 1: run only first and last decode iterations, rest can be interpolated")
     argparser.add_argument("--nodes", type=str, default="all", help="nodes to run, e.g., 'all', '0,1,2', '0-3' (for 4 nodes), '0-3,5' (for 5 nodes)")
+    argparser.add_argument("--layers", type=str, default="all", help="layers to simulate, e.g., 'all', 'decode0,decode1,decode2'")
     argparser.add_argument("--dtype", choices=["fp16", "fp8"], default="fp16", help="numeric precision")
     argparser.add_argument("--log", choices=["debug", "info", "error"], default="info", help="logging level")
     argparser.add_argument("--outdir", type=str, default="./out", help="directory for generated csv files")
@@ -52,6 +53,9 @@ if __name__=="__main__":
     if os.path.exists(out_dir):
         shutil.rmtree(out_dir)
     os.makedirs(out_dir)
+    if os.path.exists(out_dir+"_graph"):
+        shutil.rmtree(out_dir+"_graph")
+    os.makedirs(out_dir+"_graph")
 
     generator = Generator()
     if not args.only_decode:
@@ -60,7 +64,7 @@ if __name__=="__main__":
 
         prefill_models = []
         for rank in nodes:
-            prefill_models.append(build_model(model_config, prefill_cfg.get_dist_info(rank), args.dtype, out_dir))
+            prefill_models.append(build_model(model_config, prefill_cfg.get_dist_info(rank), args.dtype, args.layers, out_dir))
 
         generator.prefill(prefill_models, args.bsz, args.prefill_len)
 
@@ -70,15 +74,13 @@ if __name__=="__main__":
     decode_models = []
     footprint_list = []
     for rank in nodes:
-        model = build_model(model_config, decode_cfg.get_dist_info(rank), args.dtype, out_dir)
+        model = build_model(model_config, decode_cfg.get_dist_info(rank), args.dtype, args.layers, out_dir)
         footprint = model.memory_footprint(args.bsz, args.prefill_len+args.decode_len)
         logging.info("rank: {} HBM footprint: {:.2f} GB".format(rank, footprint/1024/1024/1024))
         decode_models.append(model)
         footprint_list.append(footprint)
 
-    with open(args.outdir+"footprint.json", "w") as f:
+    with open(args.outdir+"/footprint.json", "w") as f:
         json.dump(footprint_list, f)
 
     generator.decode(decode_models, args.bsz, args.prefill_len, args.decode_len, args.simplified_decode)
-        
-

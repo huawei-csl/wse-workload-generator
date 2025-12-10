@@ -4,8 +4,8 @@ from typing import List
 import compute_graph
 from compute_graph import get_compute_graph
 
-from tensor import Tensor, concat
-from utils import dtype_to_byte, intceil, divide_equal
+from tensor import Tensor, get_tensor, View, Split, Concat, Slice, NoOp
+from utils import dtype_to_byte, intceil, divide_equal, hash_string
 from workload import get_moe_gate_model
 import numpy as np
 
@@ -309,9 +309,9 @@ class Multicast(Layer):
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
         
-        out = Tensor(self.uid + "_out", (bsz, seqlen, hidden_dim))
+        out = [Tensor(x.uid + "_dst" + str(d), (bsz, seqlen, hidden_dim)) for d in self.dst]
         stats.append(self.uid, "Multicast", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.dst, dims=dims)
-        get_compute_graph().add_node(self, [x], [out], attrs=None)
+        get_compute_graph().add_node(self, [x], out, attrs=None)
 
         return out 
     
@@ -752,35 +752,40 @@ class MLAAbsorbBlock(Layer):
             self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
 
     def forward(self, x, ctx_len, stats):
-        bsz, seqlen, _ = x.dims
+        local_bsz, seqlen, _ = x.dims
         assert seqlen == 1, "Absorb block should be used only for decode"
-
-        # batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
-        # local_bsz = len(batch_ids)
-        local_bsz = bsz 
-
-        # x = x.slice(batch_ids, axis=0)
 
         kv = self.ops["wkv_a"].forward(x, stats=stats)
         #TODO: implement KV update
 
         q = self.ops["wq_a"].forward(x, stats=stats)
         q = self.ops["wq_b"].forward(q, stats=stats)
-        q = q.view([local_bsz, seqlen, self.n_local_heads, self.qk_head_dim])
-        q_nope, q_pe = q.split([self.qk_nope_head_dim, self.qk_rope_head_dim], axis=-1)
+
+        # q = q.view([local_bsz, seqlen, self.n_local_heads, self.qk_head_dim])
+        q = View(q, [local_bsz, seqlen, self.n_local_heads, self.qk_head_dim]).forward(stats=stats)
+
+        # q_nope, q_pe = q.split([self.qk_nope_head_dim, self.qk_rope_head_dim], axis=-1)
+        q_nope, q_pe = Split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], axis=-1).forward(stats=stats)
+
         q_nope = self.ops["wkv_b1"].forward(q_nope, stats=stats)
-        q = concat([q_nope, q_pe], axis=-1)
+
+        # q = concat([q_nope, q_pe], axis=-1)
+        q = Concat([q_nope, q_pe], axis=-1).forward(stats=stats)
+
 
         attn_out = self.ops["absorb_attn"].forward(q, ctx_len, stats=stats)
         
         if self.dist_info.sp > 1:
-            attn_out = attn_out.view([local_bsz, seqlen, self.n_local_heads*self.kv_lora_rank])
+            # attn_out = attn_out.view([local_bsz, seqlen, self.n_local_heads*self.kv_lora_rank])
+            attn_out = View(attn_out, [local_bsz, seqlen, self.n_local_heads*self.kv_lora_rank]).forward(stats=stats)
             attn_out = self.ops["allreduce_sp"].forward(attn_out, stats=stats)
-            attn_out = attn_out.view([local_bsz, seqlen, self.n_local_heads, self.kv_lora_rank])
+            # attn_out = attn_out.view([local_bsz, seqlen, self.n_local_heads, self.kv_lora_rank])
+            attn_out = View(attn_out, [local_bsz, seqlen, self.n_local_heads, self.kv_lora_rank]).forward(stats=stats)
 
         x = self.ops["wkv_b2"].forward(attn_out, stats=stats)
 
-        x = x.view([local_bsz, seqlen, self.n_local_heads*self.v_head_dim])
+        # x = x.view([local_bsz, seqlen, self.n_local_heads*self.v_head_dim])
+        x = View(x, [local_bsz, seqlen, self.n_local_heads*self.v_head_dim]).forward(stats=stats)
         y = self.ops["wo"].forward(x, stats=stats)
 
         if self.dist_info.tp_attn > 1:
@@ -886,8 +891,7 @@ class FFN(Layer):
             y = self.ops["allreduce"].forward(y, stats=stats)
         
         return y
-        # for opname in self.ops:
-        #     self.ops[opname].forward(bsz, stats=stats)
+
 
     def memory_footprint(self, bsz=None, ctx_len=None):
         mem_size = sum([self.ops[opname].memory_footprint() for opname in self.ops])
@@ -999,9 +1003,13 @@ class MoE(Layer):
                     # sort the dst_nodes for consistent ordering
                     dst_nodes = sorted(dst_nodes)
 
+                    x_slice = Slice(x, [batch_id], axis=0).forward(stats=stats)
                     if len(dst_nodes) > 0:
                         Multicast(self.uid+"_multicast_exp_"+str(batch_id), vector_size=self.hidden_size, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(
-                            x.slice([batch_id], axis=0, uid=x.uid + f"_slice[{batch_id}]"), stats=stats)
+                            # x.slice([batch_id], axis=0), stats=stats)
+                            x_slice, stats=stats)
+                    
+                    x_local = NoOp(x_slice, uid=x_slice.uid + f"_dst{self.dist_info.rank}").forward(stats=stats)
 
                 Barrier(self.uid+"_barrier", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
         else:
@@ -1017,7 +1025,12 @@ class MoE(Layer):
             logging.debug("expert {} num of routed samples: {}".format(e, len(recv_batch_ids[e])))
 
             if len(recv_batch_ids[e]) > 0:
-                x_recv = concat([Tensor(x.uid + f"_slice[{batch_id}]", [1, seqlen, hidden_dim]) for batch_id in recv_batch_ids[e]], axis=0)
+                # Give a unique uid to the concat operation, based on indices
+                concat_uid = self.uid + "_dispatch_recv_concat_" + hash_string("_".join([str(batch_id) for batch_id in recv_batch_ids[e]]))
+                x_recv = Concat(
+                    [Tensor(x.uid + f"_slice{batch_id}_dst{self.dist_info.rank}", [1, seqlen, hidden_dim]) for batch_id in recv_batch_ids[e]], 
+                    axis=0,
+                    uid=concat_uid).forward(stats=stats)
                 exp_outs[e] = self.experts[e].forward(x_recv, stats=stats)
 
             total_moe_num_tokens_per_device += len(recv_batch_ids[e])
@@ -1027,7 +1040,12 @@ class MoE(Layer):
         # if this node holds a copy of the shared expert
         if self.shared_expert:
             batch_ids_for_shared = [batch_id for batch_id, mapped_shared in self.dist_info.batch_to_shared_exp.items() if self.dist_info.rank == mapped_shared]
-            x_for_shared = concat([Tensor(x.uid + f"_slice[{batch_id}]", [1, seqlen, hidden_dim]) for batch_id in batch_ids_for_shared], axis=0)
+            # x_for_shared = concat([Tensor(x.uid + f"_slice{batch_id}", [1, seqlen, hidden_dim]) for batch_id in batch_ids_for_shared], axis=0)
+            concat_uid = self.uid + "_shared_concat_" + hash_string("_".join([str(batch_id) for batch_id in batch_ids_for_shared]))
+            x_for_shared = Concat(
+                [Tensor(x.uid + f"_slice{batch_id}", [1, seqlen, hidden_dim]) for batch_id in batch_ids_for_shared], 
+                axis=0, 
+                uid=concat_uid).forward(stats=stats)
 
             self.shared_expert.forward(x_for_shared, stats=stats)
             logging.debug("Shared expert on node {} processed {} samples".format(self.dist_info.rank, len(batch_ids_for_shared)))
@@ -1057,7 +1075,7 @@ class MoE(Layer):
                     dst_nodes = [self.dist_info.get_dp_master(dp_rank, "attn") for dp_rank in dp_ranks]
                     
                     for batch_id, dst_node in zip(batch_ids, dst_nodes):
-                        batchid_dst[dst_node].append(batch_id)
+                        batchid_dst[dst_node].append((batch_id, e))
 
                 logging.debug("gather expert outputs at dst_nodes: {}".format(batchid_dst))
 
@@ -1068,7 +1086,13 @@ class MoE(Layer):
                     
                     # if there are tokens to send to node i, do unicast
                     if len(batchid_dst[i]) > 0:
-                        unicast_tensor = concat([x.slice([batch_id], axis=0, uid=x.uid + f"_slice[{batch_id}]") for batch_id in batchid_dst[i]], axis=0)
+                        # unicast_tensor = concat([x.slice([batch_id], axis=0, uid=x.uid + f"_slice{batch_id}") for batch_id in batchid_dst[i]], axis=0)
+                        concat_uid = self.uid + "_gather_unicast_concat_" + hash_string("_".join([f"{batch_id}e{expert_id}" for batch_id, expert_id in batchid_dst[i]]))
+                        unicast_tensor = Concat(
+                            # [x.slice([batch_id], axis=0, uid=x.uid + f"_slice{batch_id}") for batch_id in batchid_dst[i]], 
+                            [Slice(exp_outs[expert_id], [batch_id], axis=0).forward(stats=stats) for batch_id, expert_id in batchid_dst[i]], 
+                            axis=0,
+                            uid=concat_uid).forward(stats=stats)
                         Unicast(self.uid+"_unicast_"+str(i), vector_size=unicast_tensor.numel(), src=self.dist_info.rank, dst=i, dtype=self.dtype).forward(
                             unicast_tensor, stats=stats)
 
