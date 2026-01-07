@@ -11,8 +11,8 @@ class ComputeGraph:
         assert op_id not in self.nodes, "Operation ID {} already exists in the compute graph".format(op_id)
         self.nodes[op_id] = {
             "op_type": op.__class__.__name__,
-            "inputs": [t.uid for t in inputs],
-            "outputs": [t.uid for t in outputs],
+            "inputs": [t.graph_id for t in inputs],
+            "outputs": [t.graph_id for t in outputs],
             "attrs": attrs
         }
 

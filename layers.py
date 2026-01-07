@@ -4,33 +4,10 @@ from typing import List
 import compute_graph
 from compute_graph import get_compute_graph
 
-from tensor import Tensor, get_tensor, View, Split, Concat, Slice, NoOp
+from tensor import Tensor, get_tensor, View, Split, Concat, Slice
 from utils import dtype_to_byte, intceil, divide_equal, hash_string
 from workload import get_moe_gate_model
 import numpy as np
-
-
-# def get_bucketid_from_itemid(item_id, n_items, n_buckets):
-#     assert np.all(item_id < n_items)
-
-#     n_items_per_bucket_low = n_items // n_buckets
-#     n_items_per_bucket_high = n_items_per_bucket_low + 1
-
-#     n_buckets_with_high = n_items - n_items_per_bucket_low * n_buckets
-#     n_buckets_with_low = n_buckets - n_buckets_with_high
-
-#     boundary_id = n_items_per_bucket_high * n_buckets_with_high
-
-#     if isinstance(item_id, np.ndarray):
-#         bucket_id = np.where(item_id < boundary_id, item_id // n_items_per_bucket_high, n_buckets_with_high + (item_id - boundary_id) // n_items_per_bucket_low)
-#     else:
-#         if item_id < boundary_id:
-#             bucket_id = item_id // n_items_per_bucket_high
-#         else:
-#             bucket_id = n_buckets_with_high + (item_id - boundary_id) // n_items_per_bucket_low
-
-#     return bucket_id
-
 
 class Layer:
     def __init__(self) -> None:
@@ -52,13 +29,14 @@ class Layer:
         raise NotImplementedError    
     
 class Linear(Layer):
-    def __init__(self, uid, in_features, out_features, dtype) -> None:
+    def __init__(self, uid, in_features, out_features, dist_info, dtype) -> None:
         super().__init__()
         logging.debug("Linear layer {} with weight dims: {} x {}".format(uid, in_features, out_features))
 
         self.uid = uid 
         self.in_features = in_features
         self.out_features = out_features
+        self.dist_info = dist_info
         self.dtype = dtype
 
     def forward(self, x, stats=None):
@@ -72,7 +50,7 @@ class Linear(Layer):
         dims = self.get_dims(bsz*seqlen)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
-        out = Tensor(self.uid + "_out", (bsz, seqlen, self.out_features))
+        out = Tensor(f"{self.uid}_out", self.dist_info.rank, [bsz, seqlen, self.out_features]) # squeeze seqlen
         stats.append(self.uid, "Linear", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
         get_compute_graph().add_node(self, [x], [out], attrs=None)
 
@@ -104,7 +82,7 @@ Equivalent to n_groups Linear layers running in parallel.
 For example: einsum(bshc,hcd->bshd), h is common in all terms, meaning the same computation is repeated for h times. Therefore, h: n_groups
 '''
 class GroupedLinear(Layer):
-    def __init__(self, uid, n_groups, in_features, out_features, dtype) -> None:
+    def __init__(self, uid, n_groups, in_features, out_features, dist_info, dtype) -> None:
         super().__init__()
         logging.debug("GroupedLinear layer {} with n_groups: {} weight dims: {} x {}".format(uid, n_groups, in_features, out_features))
 
@@ -112,22 +90,30 @@ class GroupedLinear(Layer):
         self.n_groups = n_groups
         self.in_features = in_features
         self.out_features = out_features
+        self.dist_info = dist_info
         self.dtype = dtype
 
     def forward(self, x, stats=None):
-        bsz, seqlen, n_local_heads, hidden_dim = x.dims
-        assert n_local_heads == self.n_groups, "Input n_local_heads {} does not match n_groups {}".format(n_local_heads, self.n_groups)
-        assert hidden_dim == self.in_features, "Input hidden dim {} does not match in_features {}".format(hidden_dim, self.in_features)
+        # bsz, seqlen, n_local_heads, hidden_dim = x.dims
+    
+        # assert n_local_heads == self.n_groups, "Input n_local_heads {} does not match n_groups {}".format(n_local_heads, self.n_groups)
+        # assert hidden_dim == self.in_features, "Input hidden dim {} does not match in_features {}".format(hidden_dim, self.in_features)
+
+        assert len(x.dims) == 3, "Input tensor must have 3 dimensions"
+        n_groups, batch_dim, in_features = x.dims
+    
+        assert n_groups == self.n_groups, "Input dim0 {} does not match self.n_groups {}".format(n_groups, self.n_groups)
+        assert in_features == self.in_features, "Input in_features {} does not match self.in_features {}".format(in_features, self.in_features)
 
         memory_footprint = self.memory_footprint()
-        num_ops = self.num_ops(bsz*seqlen)
+        num_ops = self.num_ops(batch_dim)
         hbm_reads = self.hbm_reads()
         network_data = self.network_data()
-        dims = self.get_dims(bsz*seqlen)
+        dims = self.get_dims(batch_dim)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
 
-        out = Tensor(self.uid + "_out", (bsz, seqlen, n_local_heads, self.out_features))
+        out = Tensor(f"{self.uid}_out", self.dist_info.rank, [n_groups, batch_dim, self.out_features])
         stats.append(self.uid, "GroupedLinear", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
         get_compute_graph().add_node(self, [x], [out], attrs=None)
         return out
@@ -155,7 +141,7 @@ class GroupedLinear(Layer):
 
 
 class Allreduce(Layer):
-    def __init__(self, uid, vector_size, comm_group, dtype) -> None:
+    def __init__(self, uid, vector_size, comm_group, dist_info, dtype) -> None:
         super().__init__()
         logging.debug("Allreduce layer {} with vector size: {} ".format(uid, vector_size))
 
@@ -163,6 +149,7 @@ class Allreduce(Layer):
         self.vector_size = vector_size
         self.dtype = dtype
         self.comm_group = comm_group
+        self.dist_info = dist_info
 
     def forward(self, x, stats=None):
         bsz, seqlen, hidden_dim = x.dims
@@ -174,7 +161,7 @@ class Allreduce(Layer):
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
         
-        out = Tensor(self.uid + "_out", (bsz, seqlen, hidden_dim))
+        out = Tensor(f"{self.uid}_out", self.dist_info.rank, (bsz, seqlen, hidden_dim))
         stats.append(self.uid, "AllReduce", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group, dims=dims)
         get_compute_graph().add_node(self, [x], [out], attrs=None)
         return out
@@ -198,7 +185,7 @@ class Allreduce(Layer):
         return vecsize # in bytes
 
 class AlltoAll(Layer):
-    def __init__(self, uid, vector_size, cluster_size, dtype) -> None:
+    def __init__(self, uid, vector_size, cluster_size, dist_info, dtype) -> None:
         super().__init__()
         logging.debug("AlltoAll layer {} with vector size: {} among {} devices".format(uid, vector_size, cluster_size))
 
@@ -206,6 +193,7 @@ class AlltoAll(Layer):
         self.vector_size = vector_size
         self.cluster_size = cluster_size
         self.dtype = dtype
+        self.dist_info = dist_info
         self.comm_group = list(range(cluster_size))
 
     def forward(self, x, stats=None):
@@ -217,7 +205,7 @@ class AlltoAll(Layer):
         dims = self.get_dims(bsz*seqlen)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
-        out = Tensor(self.uid + "_out", (bsz, seqlen, hidden_dim))
+        out = Tensor(f"{self.uid}_out", self.dist_info.rank, (bsz, seqlen, hidden_dim))
         stats.append(self.uid, "AlltoAll", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group, dims=dims)
         get_compute_graph().add_node(self, [x], [out], attrs=None)
         return out 
@@ -263,7 +251,7 @@ class Unicast(Layer):
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
         
-        out = Tensor(self.uid + "_out", (bsz, seqlen, hidden_dim))
+        out = Tensor(f"{self.uid}", self.dst, (bsz, seqlen, hidden_dim))
         stats.append(self.uid, "Unicast", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.dst, dims=dims)
         get_compute_graph().add_node(self, [x], [out], attrs=None)
 
@@ -309,7 +297,7 @@ class Multicast(Layer):
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
         
-        out = [Tensor(x.uid + "_dst" + str(d), (bsz, seqlen, hidden_dim)) for d in self.dst]
+        out = [Tensor(f"{x.uid}", d, (bsz, seqlen, hidden_dim)) for d in self.dst]
         stats.append(self.uid, "Multicast", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.dst, dims=dims)
         get_compute_graph().add_node(self, [x], out, attrs=None)
 
@@ -367,7 +355,7 @@ class Barrier(Layer):
         return 0
 
 class SelfAttention(Layer):
-    def __init__(self, uid, num_attention_heads, num_key_value_heads, head_dim, seq_parallel, dtype) -> None:
+    def __init__(self, uid, num_attention_heads, num_key_value_heads, head_dim, seq_parallel, dist_info, dtype) -> None:
         super().__init__()
         logging.debug("SelfAttention layer {} with KV-cache dims: bsz x ctx_len x {} x {}".format(uid, num_key_value_heads, head_dim))
 
@@ -377,6 +365,7 @@ class SelfAttention(Layer):
         self.head_dim = head_dim
         self.dtype = dtype
         self.seq_parallel = seq_parallel
+        self.dist_info = dist_info
 
     def forward(self, bsz, seqlen, ctx_len=None, stats=None):
         memory_footprint = self.memory_footprint(bsz, ctx_len)
@@ -446,15 +435,15 @@ class SelfAttention(Layer):
         return 0
 
 class MLANaiveAttention(Layer):
-    def __init__(self, uid, n_local_heads, qk_head_dim, v_head_dim, seq_parallel, dtype) -> None:
+    def __init__(self, uid, n_local_heads, qk_head_dim, v_head_dim, dist_info, dtype) -> None:
         super().__init__()
 
         self.uid = uid 
         self.n_local_heads = n_local_heads
         self.qk_head_dim = qk_head_dim
         self.v_head_dim = v_head_dim
-        self.seq_parallel = seq_parallel
         self.dtype = dtype
+        self.dist_info = dist_info
 
     def forward(self, bsz, seqlen, ctx_len=None, stats=None):
         memory_footprint = self.memory_footprint(bsz, ctx_len)
@@ -467,20 +456,20 @@ class MLANaiveAttention(Layer):
         stats.append(self.uid, "MLANaiveAttention", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
 
     def memory_footprint(self, bsz, ctx_len):
-        memory_footprint = bsz * intceil(ctx_len/self.seq_parallel) * self.n_local_heads * self.qk_head_dim * dtype_to_byte(self.dtype) # k_cache
-        memory_footprint += bsz * intceil(ctx_len/self.seq_parallel) * self.n_local_heads * self.v_head_dim * dtype_to_byte(self.dtype) # v_cache
+        memory_footprint = bsz * intceil(ctx_len/self.dist_info.sp) * self.n_local_heads * self.qk_head_dim * dtype_to_byte(self.dtype) # k_cache
+        memory_footprint += bsz * intceil(ctx_len/self.dist_info.sp) * self.n_local_heads * self.v_head_dim * dtype_to_byte(self.dtype) # v_cache
         return memory_footprint  # KV-cache only, in bytes
 
     def get_dims(self, bsz, seqlen, ctx_len):
         is_prefill = ctx_len == 0
         if is_prefill:
-            seqlen_per_device = intceil(seqlen/self.seq_parallel)
+            seqlen_per_device = intceil(seqlen/self.dist_info.sp)
             input_dims = [bsz, seqlen, self.n_local_heads, self.qk_head_dim]
             K_dims = [bsz, seqlen_per_device, self.n_local_heads, self.qk_head_dim]
             V_dims = [bsz, seqlen_per_device, self.n_local_heads, self.v_head_dim]
             out_dims = [bsz, seqlen, self.n_local_heads, self.v_head_dim]
         else:
-            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+            ctx_len_per_device = intceil(ctx_len/self.dist_info.sp)
             input_dims = [bsz, 1, self.n_local_heads, self.qk_head_dim]
             K_dims = [bsz, ctx_len_per_device, self.n_local_heads, self.qk_head_dim]
             V_dims = [bsz, ctx_len_per_device, self.n_local_heads, self.v_head_dim]
@@ -490,17 +479,17 @@ class MLANaiveAttention(Layer):
     def num_ops(self, bsz, seqlen, ctx_len):
         is_prefill = ctx_len == 0
         if is_prefill:
-            seqlen_per_device = intceil(seqlen/self.seq_parallel)
+            seqlen_per_device = intceil(seqlen/self.dist_info.sp)
             n_ops = bsz * seqlen_per_device * self.n_local_heads * self.qk_head_dim * seqlen # einsum(bshd,bthd→bsht)
             n_ops += bsz * seqlen_per_device * self.n_local_heads * self.v_head_dim * seqlen # einsum(bsht,bthv→bshv)
         else:
-            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+            ctx_len_per_device = intceil(ctx_len/self.dist_info.sp)
             n_ops = bsz * ctx_len_per_device * self.n_local_heads * self.qk_head_dim * seqlen # einsum(bshd,bthd→bsht)
             n_ops += bsz * ctx_len_per_device * self.n_local_heads * self.v_head_dim * seqlen # einsum(bsht,bthv→bshv)
         return n_ops # in terms of number of MACs
 
     def hbm_reads(self, bsz=None, ctx_len=None):
-        ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+        ctx_len_per_device = intceil(ctx_len/self.dist_info.sp)
         rw = bsz * ctx_len_per_device * self.n_local_heads * self.qk_head_dim * dtype_to_byte(self.dtype) # k_cache
         rw += bsz * ctx_len_per_device * self.n_local_heads * self.v_head_dim * dtype_to_byte(self.dtype) # v_cache
         return rw # KV-cache only, in bytes
@@ -509,15 +498,16 @@ class MLANaiveAttention(Layer):
         return 0
 
 class MLAAbsorbAttention(Layer):
-    def __init__(self, uid, n_local_heads, kv_lora_rank, qk_rope_head_dim, seq_parallel, dtype) -> None:
+    def __init__(self, uid, n_local_heads, kv_lora_rank, qk_rope_head_dim, dist_info, dtype) -> None:
         super().__init__()
 
         self.uid = uid 
         self.n_local_heads = n_local_heads
         self.kv_lora_rank = kv_lora_rank
         self.qk_rope_head_dim = qk_rope_head_dim
-        self.seq_parallel = seq_parallel
+        # self.seq_parallel = seq_parallel
         self.dtype = dtype
+        self.dist_info = dist_info
 
     def forward(self, x, ctx_len=None, stats=None):
         bsz, seqlen, n_local_heads, D = x.dims
@@ -531,14 +521,14 @@ class MLAAbsorbAttention(Layer):
         dims = self.get_dims(bsz, seqlen, ctx_len)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
-        out = Tensor(self.uid + "_out", (bsz, seqlen, n_local_heads, self.kv_lora_rank))
+        out = Tensor(f"{self.uid}_out", self.dist_info.rank, (bsz, seqlen, n_local_heads, self.kv_lora_rank))
         stats.append(self.uid, "MLAAbsorbAttention", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
         get_compute_graph().add_node(self, [x], [out], attrs=None)
 
         return out
 
     def memory_footprint(self, bsz, ctx_len):
-        ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+        ctx_len_per_device = intceil(ctx_len/self.dist_info.sp)
         memory_footprint = bsz * ctx_len_per_device * self.kv_lora_rank * dtype_to_byte(self.dtype) # kv_cache
         memory_footprint += bsz * ctx_len_per_device * self.qk_rope_head_dim * dtype_to_byte(self.dtype) # pe_cache
         return memory_footprint  # KV-cache only, in bytes
@@ -546,13 +536,13 @@ class MLAAbsorbAttention(Layer):
     def get_dims(self, bsz, seqlen, ctx_len):
         is_prefill = ctx_len == 0
         if is_prefill:
-            seqlen_per_device = intceil(seqlen/self.seq_parallel)
+            seqlen_per_device = intceil(seqlen/self.dist_info.sp)
             input_dims = [bsz, seqlen, self.n_local_heads, self.kv_lora_rank]
             K_dims = [bsz, seqlen_per_device, self.kv_lora_rank]
             V_dims = [bsz, seqlen_per_device, self.qk_rope_head_dim]
             out_dims = [bsz, seqlen, self.n_local_heads, self.kv_lora_rank]
         else:
-            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+            ctx_len_per_device = intceil(ctx_len/self.dist_info.sp)
             input_dims = [bsz, 1, self.n_local_heads, self.kv_lora_rank]
             K_dims = [bsz, ctx_len_per_device, self.kv_lora_rank]
             V_dims = [bsz, ctx_len_per_device, self.qk_rope_head_dim]
@@ -562,19 +552,19 @@ class MLAAbsorbAttention(Layer):
     def num_ops(self, bsz, seqlen, ctx_len):
         is_prefill = ctx_len == 0
         if is_prefill:
-            seqlen_per_device = intceil(seqlen/self.seq_parallel)
+            seqlen_per_device = intceil(seqlen/self.dist_info.sp)
             n_ops = bsz * seqlen_per_device * self.n_local_heads * self.kv_lora_rank * seqlen # einsum(bshc,btc→bsht)
             n_ops += bsz * seqlen_per_device * self.n_local_heads * self.qk_rope_head_dim * seqlen # einsum(bshr,btr→bsht)
             n_ops += bsz * seqlen_per_device * self.n_local_heads * self.kv_lora_rank * seqlen # einsum(bsht,btc→bshc)
         else:
-            ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+            ctx_len_per_device = intceil(ctx_len/self.dist_info.sp)
             n_ops = bsz * ctx_len_per_device * self.n_local_heads * self.kv_lora_rank * seqlen # einsum(bshc,btc→bsht)
             n_ops += bsz * ctx_len_per_device * self.n_local_heads * self.qk_rope_head_dim * seqlen # einsum(bshr,btr→bsht)
             n_ops += bsz * ctx_len_per_device * self.n_local_heads * self.kv_lora_rank * seqlen # einsum(bsht,btc→bshc)
         return n_ops # in terms of number of MACs
 
     def hbm_reads(self, bsz=None, ctx_len=None):
-        ctx_len_per_device = intceil(ctx_len/self.seq_parallel)
+        ctx_len_per_device = intceil(ctx_len/self.dist_info.sp)
         rw = bsz * ctx_len_per_device * self.kv_lora_rank * dtype_to_byte(self.dtype) # kv_cache
         rw += bsz * ctx_len_per_device * self.qk_rope_head_dim * dtype_to_byte(self.dtype) # pe_cache
         return rw # KV-cache only, in bytes
@@ -582,7 +572,7 @@ class MLAAbsorbAttention(Layer):
     def network_data(self, bsz=None):
         return 0
 
-    
+
 class GQABlock(Layer):
     def __init__(self, uid, hidden_size, num_attention_heads, num_key_value_heads, dist_info, dtype) -> None:
         super().__init__()
@@ -599,18 +589,18 @@ class GQABlock(Layer):
         self.uid = uid
 
         self.ops = {}
-        self.ops["q_proj"] = Linear(uid+"_qproj", hidden_size, num_heads_per_device * head_dim, dtype)
-        self.ops["k_proj"] = Linear(uid+"_kproj", hidden_size, num_kv_heads_per_device * head_dim, dtype)
-        self.ops["v_proj"] = Linear(uid+"_vproj", hidden_size, num_kv_heads_per_device * head_dim, dtype)
+        self.ops["q_proj"] = Linear(uid+"_qproj", hidden_size, num_heads_per_device * head_dim, dist_info, dtype)
+        self.ops["k_proj"] = Linear(uid+"_kproj", hidden_size, num_kv_heads_per_device * head_dim, dist_info, dtype)
+        self.ops["v_proj"] = Linear(uid+"_vproj", hidden_size, num_kv_heads_per_device * head_dim, dist_info, dtype)
 
         self.ops["self_attn"] = SelfAttention(uid+"_selfattn", num_heads_per_device, num_kv_heads_per_device, head_dim, dist_info.sp, dtype)
         if dist_info.sp > 1:
-            self.ops["allreduce_sp"] = Allreduce(uid+"_ar_sp", num_heads_per_device * head_dim, dist_info.attn_comm_groups["sp"], dtype)
+            self.ops["allreduce_sp"] = Allreduce(uid+"_ar_sp", num_heads_per_device * head_dim, dist_info.attn_comm_groups["sp"], dist_info, dtype)
 
-        self.ops["o_proj"] = Linear(uid+"_oproj", num_heads_per_device * head_dim, hidden_size, dtype)
+        self.ops["o_proj"] = Linear(uid+"_oproj", num_heads_per_device * head_dim, hidden_size, dist_info, dtype)
 
         if dist_info.tp_attn > 1:
-            self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
+            self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dist_info, dtype)
 
     def forward(self, bsz, seqlen, ctx_len, stats):
         batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
@@ -646,21 +636,21 @@ class MLANaiveBlock(Layer):
         qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
 
         self.ops = {}
-        self.ops["wq_a"] = Linear(uid+"_wqa", hidden_size, q_lora_rank, dtype)
-        self.ops["wq_b"] = Linear(uid+"_wqb", q_lora_rank, n_local_heads*qk_head_dim, dtype)
-        self.ops["wkv_a"] = Linear(uid+"_wkva", hidden_size, kv_lora_rank+qk_rope_head_dim, dtype)
-        self.ops["wkv_b"] = Linear(uid+"_wkvb", kv_lora_rank, n_local_heads*(qk_nope_head_dim + v_head_dim), dtype)
+        self.ops["wq_a"] = Linear(uid+"_wqa", hidden_size, q_lora_rank, dist_info, dtype)
+        self.ops["wq_b"] = Linear(uid+"_wqb", q_lora_rank, n_local_heads*qk_head_dim, dist_info, dtype)
+        self.ops["wkv_a"] = Linear(uid+"_wkva", hidden_size, kv_lora_rank+qk_rope_head_dim, dist_info, dtype)
+        self.ops["wkv_b"] = Linear(uid+"_wkvb", kv_lora_rank, n_local_heads*(qk_nope_head_dim + v_head_dim), dist_info, dtype)
 
-        self.ops["naive_attn"] = MLANaiveAttention(uid+"_naiveattn", n_local_heads, qk_head_dim, v_head_dim, dist_info.sp, dtype)
+        self.ops["naive_attn"] = MLANaiveAttention(uid+"_naiveattn", n_local_heads, qk_head_dim, v_head_dim, dist_info, dtype)
         if dist_info.sp > 1:
-            self.ops["allreduce_sp"] = Allreduce(uid+"_ar_sp", n_local_heads * v_head_dim, dist_info.attn_comm_groups["sp"], dtype)
+            self.ops["allreduce_sp"] = Allreduce(uid+"_ar_sp", n_local_heads * v_head_dim, dist_info.attn_comm_groups["sp"], dist_info, dtype)
 
-        self.ops["wo"] = Linear(uid+"_wo", n_local_heads*v_head_dim, hidden_size, dtype)
+        self.ops["wo"] = Linear(uid+"_wo", n_local_heads*v_head_dim, hidden_size, dist_info, dtype)
         if dist_info.tp_attn > 1:
-            self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
+            self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dist_info, dtype)
 
         if dist_info.moe_comm == "alltoall":
-            self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dtype)
+            self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dist_info, dtype)
 
     def forward(self, x, ctx_len, stats):
         bsz, seqlen, _ = x.dims
@@ -736,20 +726,20 @@ class MLAAbsorbBlock(Layer):
         self.v_head_dim = v_head_dim
 
         self.ops = {}
-        self.ops["wq_a"] = Linear(uid+"_wqa", hidden_size, q_lora_rank, dtype)
-        self.ops["wq_b"] = Linear(uid+"_wqb", q_lora_rank, self.n_local_heads*self.qk_head_dim, dtype)
-        self.ops["wkv_a"] = Linear(uid+"_wkva", hidden_size, kv_lora_rank+qk_rope_head_dim, dtype)
-        self.ops["wkv_b1"] = GroupedLinear(uid+"_wkvb1", self.n_local_heads, qk_nope_head_dim, kv_lora_rank, dtype)
-        self.ops["absorb_attn"] = MLAAbsorbAttention(uid+"_absorbattn", self.n_local_heads, kv_lora_rank, qk_rope_head_dim, dist_info.sp, dtype)
+        self.ops["wq_a"] = Linear(uid+"_wqa", hidden_size, q_lora_rank, dist_info, dtype)
+        self.ops["wq_b"] = Linear(uid+"_wqb", q_lora_rank, self.n_local_heads*self.qk_head_dim, dist_info, dtype)
+        self.ops["wkv_a"] = Linear(uid+"_wkva", hidden_size, kv_lora_rank+qk_rope_head_dim, dist_info, dtype)
+        self.ops["wkv_b1"] = GroupedLinear(uid+"_wkvb1", self.n_local_heads, qk_nope_head_dim, kv_lora_rank, dist_info, dtype)
+        self.ops["absorb_attn"] = MLAAbsorbAttention(uid+"_absorbattn", self.n_local_heads, kv_lora_rank, qk_rope_head_dim, dist_info, dtype)
         if dist_info.sp > 1:
             # Allreduce to aggregate attention output from sequence parallel devices
-            self.ops["allreduce_sp"] = Allreduce(uid+"_ar_sp", self.n_local_heads * qk_rope_head_dim, dist_info.attn_comm_groups["sp"], dtype)
+            self.ops["allreduce_sp"] = Allreduce(uid+"_ar_sp", self.n_local_heads * qk_rope_head_dim, dist_info.attn_comm_groups["sp"], dist_info, dtype)
         
-        self.ops["wkv_b2"] = GroupedLinear(uid+"_wkvb2", self.n_local_heads, kv_lora_rank, v_head_dim, dtype)
-        self.ops["wo"] = Linear(uid+"_wo", self.n_local_heads*v_head_dim, hidden_size, dtype)
+        self.ops["wkv_b2"] = GroupedLinear(uid+"_wkvb2", self.n_local_heads, kv_lora_rank, v_head_dim, dist_info, dtype)
+        self.ops["wo"] = Linear(uid+"_wo", self.n_local_heads*v_head_dim, hidden_size, dist_info, dtype)
         if dist_info.tp_attn > 1:
             # Allreduce to aggregate output from tensor parallel devices
-            self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
+            self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", hidden_size, dist_info.attn_comm_groups["tp_attn"], dist_info, dtype)
 
     def forward(self, x, ctx_len, stats):
         local_bsz, seqlen, _ = x.dims
@@ -761,17 +751,18 @@ class MLAAbsorbBlock(Layer):
         q = self.ops["wq_a"].forward(x, stats=stats)
         q = self.ops["wq_b"].forward(q, stats=stats)
 
-        # q = q.view([local_bsz, seqlen, self.n_local_heads, self.qk_head_dim])
         q = View(q, [local_bsz, seqlen, self.n_local_heads, self.qk_head_dim]).forward(stats=stats)
 
-        # q_nope, q_pe = q.split([self.qk_nope_head_dim, self.qk_rope_head_dim], axis=-1)
         q_nope, q_pe = Split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], axis=-1).forward(stats=stats)
+
+        q_nope = View(q_nope, [self.n_local_heads, local_bsz*seqlen, self.qk_nope_head_dim]).forward(stats=stats)
 
         q_nope = self.ops["wkv_b1"].forward(q_nope, stats=stats)
 
+        q_nope = View(q_nope, [local_bsz, seqlen, self.n_local_heads, self.kv_lora_rank]).forward(stats=stats)
+
         # q = concat([q_nope, q_pe], axis=-1)
         q = Concat([q_nope, q_pe], axis=-1).forward(stats=stats)
-
 
         attn_out = self.ops["absorb_attn"].forward(q, ctx_len, stats=stats)
         
@@ -782,6 +773,7 @@ class MLAAbsorbBlock(Layer):
             # attn_out = attn_out.view([local_bsz, seqlen, self.n_local_heads, self.kv_lora_rank])
             attn_out = View(attn_out, [local_bsz, seqlen, self.n_local_heads, self.kv_lora_rank]).forward(stats=stats)
 
+        attn_out = View(attn_out, [self.n_local_heads, local_bsz*seqlen, self.kv_lora_rank]).forward(stats=stats)
         x = self.ops["wkv_b2"].forward(attn_out, stats=stats)
 
         # x = x.view([local_bsz, seqlen, self.n_local_heads*self.v_head_dim])
@@ -872,13 +864,13 @@ class FFN(Layer):
         inter_size_per_node = intceil(intermediate_size/dist_info.tp_ffn) 
 
         self.ops = {}
-        self.ops["up"] = Linear(uid+"_up", hidden_size, inter_size_per_node, dtype)
-        self.ops["gate"] = Linear(uid+"_gate", hidden_size, inter_size_per_node, dtype)
-        self.ops["down"] = Linear(uid+"_down", inter_size_per_node, hidden_size, dtype)
+        self.ops["up"] = Linear(uid+"_up", hidden_size, inter_size_per_node, dist_info, dtype)
+        self.ops["gate"] = Linear(uid+"_gate", hidden_size, inter_size_per_node, dist_info, dtype)
+        self.ops["down"] = Linear(uid+"_down", inter_size_per_node, hidden_size, dist_info, dtype)
         
         # in case we use TP for experts
         if dist_info.tp_ffn > 1:
-            self.ops["allreduce"] = Allreduce(uid+"_ar", hidden_size, dist_info.ffn_comm_groups["tp_ffn"], dtype)
+            self.ops["allreduce"] = Allreduce(uid+"_ar", hidden_size, dist_info.ffn_comm_groups["tp_ffn"], dist_info, dtype)
 
     def forward(self, x, stats=None):
         x1 = self.ops["up"].forward(x, stats=stats)
@@ -911,12 +903,12 @@ class Dense(Layer):
         inter_size_per_node = intceil(intermediate_size/dist_info.num_nodes) 
 
         self.ops = {}
-        self.ops["up"] = Linear(uid+"_up", hidden_size, inter_size_per_node, dtype)
-        self.ops["gate"] = Linear(uid+"_gate", hidden_size, inter_size_per_node, dtype)
-        self.ops["down"] = Linear(uid+"_down", inter_size_per_node, hidden_size, dtype)
+        self.ops["up"] = Linear(uid+"_up", hidden_size, inter_size_per_node, dist_info, dtype)
+        self.ops["gate"] = Linear(uid+"_gate", hidden_size, inter_size_per_node, dist_info, dtype)
+        self.ops["down"] = Linear(uid+"_down", inter_size_per_node, hidden_size, dist_info, dtype)
         
         if dist_info.num_nodes > 1: # we assume tp=ep for these layers
-            self.ops["allreduce"] = Allreduce(uid+"_ar", hidden_size, dist_info.ffn_comm_groups["ep"], dtype)
+            self.ops["allreduce"] = Allreduce(uid+"_ar", hidden_size, dist_info.ffn_comm_groups["ep"], dist_info, dtype)
 
     def forward(self, x, stats=None):
         x1 = self.ops["up"].forward(x, stats=stats)
@@ -948,10 +940,10 @@ class MoE(Layer):
         self.dtype = dtype 
 
         if self.dist_info.ep > 1 and dist_info.moe_comm == "alltoall":
-            self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dtype)
+            self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dist_info, dtype)
 
         if self.dist_info.ep > 1 and self.dist_info.moe_comm == "alltoall":
-            self.a2a_combine = AlltoAll(uid+"_a2a_comb", hidden_size, self.dist_info.num_nodes, dtype)
+            self.a2a_combine = AlltoAll(uid+"_a2a_comb", hidden_size, self.dist_info.num_nodes, dist_info, dtype)
 
         self.expertid_to_node = self.dist_info.get_expert_mapping(self.n_experts)
         local_experts = [expert_id for expert_id in range(self.n_experts) if self.expertid_to_node[expert_id] == self.dist_info.rank_ep]
@@ -971,7 +963,7 @@ class MoE(Layer):
         bsz, seqlen, hidden_dim = x.dims
 
         if self.dist_info.moe_comm == "alltoall":
-            x_all = Tensor(x.uid + f"_dispatch", [get_moe_gate_model().global_bsz, seqlen, hidden_dim])
+            x_all = Tensor(x.uid + f"_dispatch", self.dist_info.rank, [get_moe_gate_model().global_bsz, seqlen, hidden_dim])
             self.a2a_dispatch.forward(x_all, stats=stats)
         elif self.dist_info.moe_comm == "multicast":
             
@@ -1009,7 +1001,7 @@ class MoE(Layer):
                             # x.slice([batch_id], axis=0), stats=stats)
                             x_slice, stats=stats)
                     
-                    x_local = NoOp(x_slice, uid=x_slice.uid + f"_dst{self.dist_info.rank}").forward(stats=stats)
+                    # x_local = NoOp(x_slice, uid=x_slice.uid + f"_dst{self.dist_info.rank}").forward(stats=stats)
 
                 Barrier(self.uid+"_barrier", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
         else:
@@ -1020,7 +1012,7 @@ class MoE(Layer):
         total_moe_num_tokens_per_device = 0
         for e in self.experts:
             expert_routings = get_moe_gate_model().get_expert_routings(layer_id=self.uid)
-            recv_batch_ids[e] = np.where(expert_routings==e)[1]
+            recv_batch_ids[e] = sorted(np.where(expert_routings==e)[1])
 
             logging.debug("expert {} num of routed samples: {}".format(e, len(recv_batch_ids[e])))
 
@@ -1028,7 +1020,7 @@ class MoE(Layer):
                 # Give a unique uid to the concat operation, based on indices
                 concat_uid = self.uid + "_dispatch_recv_concat_" + hash_string("_".join([str(batch_id) for batch_id in recv_batch_ids[e]]))
                 x_recv = Concat(
-                    [Tensor(x.uid + f"_slice{batch_id}_dst{self.dist_info.rank}", [1, seqlen, hidden_dim]) for batch_id in recv_batch_ids[e]], 
+                    [Tensor(f"{x.uid}_slice{batch_id}", self.dist_info.rank, [1, seqlen, hidden_dim]) for batch_id in recv_batch_ids[e]], 
                     axis=0,
                     uid=concat_uid).forward(stats=stats)
                 exp_outs[e] = self.experts[e].forward(x_recv, stats=stats)
@@ -1043,7 +1035,7 @@ class MoE(Layer):
             # x_for_shared = concat([Tensor(x.uid + f"_slice{batch_id}", [1, seqlen, hidden_dim]) for batch_id in batch_ids_for_shared], axis=0)
             concat_uid = self.uid + "_shared_concat_" + hash_string("_".join([str(batch_id) for batch_id in batch_ids_for_shared]))
             x_for_shared = Concat(
-                [Tensor(x.uid + f"_slice{batch_id}", [1, seqlen, hidden_dim]) for batch_id in batch_ids_for_shared], 
+                [Tensor(x.uid + f"_slice{batch_id}", self.dist_info.rank, [1, seqlen, hidden_dim]) for batch_id in batch_ids_for_shared], 
                 axis=0, 
                 uid=concat_uid).forward(stats=stats)
 
@@ -1052,7 +1044,7 @@ class MoE(Layer):
 
         if self.dist_info.ep > 1:
             if self.dist_info.moe_comm == "alltoall":
-                x_all = Tensor(x.uid + f"_combine", [get_moe_gate_model().global_bsz*(self.num_experts_per_tok+self.n_shared_experts), seqlen, hidden_dim])
+                x_all = Tensor(x.uid + f"_combine", self.dist_info.rank, [get_moe_gate_model().global_bsz*(self.num_experts_per_tok+self.n_shared_experts), seqlen, hidden_dim])
                 out_tensor = self.a2a_combine.forward(x_all, stats=stats)
             elif self.dist_info.moe_comm == "multicast":
                 # after MoE layer, gather the outputs in specific nodes to sum them
@@ -1079,27 +1071,31 @@ class MoE(Layer):
 
                 logging.debug("gather expert outputs at dst_nodes: {}".format(batchid_dst))
 
-                for i in batchid_dst:
+                # sort the batchids for each dst_node, first by the expert_id then by batch_id
+                for dst_node in batchid_dst:
+                    batchid_dst[dst_node] = sorted(batchid_dst[dst_node], key=lambda x: (x[1], x[0]) ) # sort by batch_id
+
+                for dst_node in batchid_dst:
                     # if dst node is itself, skip
-                    if i == self.dist_info.rank:
+                    if dst_node == self.dist_info.rank:
                         continue
                     
                     # if there are tokens to send to node i, do unicast
-                    if len(batchid_dst[i]) > 0:
+                    if len(batchid_dst[dst_node]) > 0:
                         # unicast_tensor = concat([x.slice([batch_id], axis=0, uid=x.uid + f"_slice{batch_id}") for batch_id in batchid_dst[i]], axis=0)
-                        concat_uid = self.uid + "_gather_unicast_concat_" + hash_string("_".join([f"{batch_id}e{expert_id}" for batch_id, expert_id in batchid_dst[i]]))
+                        concat_uid = self.uid + "_gather_unicast_concat_" + hash_string("_".join([f"{batch_id}e{expert_id}" for batch_id, expert_id in batchid_dst[dst_node]]))
                         unicast_tensor = Concat(
                             # [x.slice([batch_id], axis=0, uid=x.uid + f"_slice{batch_id}") for batch_id in batchid_dst[i]], 
-                            [Slice(exp_outs[expert_id], [batch_id], axis=0).forward(stats=stats) for batch_id, expert_id in batchid_dst[i]], 
+                            [Slice(exp_outs[expert_id], [batch_id], axis=0).forward(stats=stats) for batch_id, expert_id in batchid_dst[dst_node]], 
                             axis=0,
                             uid=concat_uid).forward(stats=stats)
-                        Unicast(self.uid+"_unicast_"+str(i), vector_size=unicast_tensor.numel(), src=self.dist_info.rank, dst=i, dtype=self.dtype).forward(
+                        Unicast(self.uid+"_unicast_"+str(dst_node), vector_size=unicast_tensor.numel(), src=self.dist_info.rank, dst=dst_node, dtype=self.dtype).forward(
                             unicast_tensor, stats=stats)
 
                 Barrier(self.uid+"_barrier_uc", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the unicast before proceeding
 
                 batch_ids = self.dist_info.get_local_batchids("attn")
-                out_tensor = Tensor(self.uid + "_out", [len(batch_ids), seqlen, hidden_dim])
+                out_tensor = Tensor(self.uid + "_out", self.dist_info.rank, [len(batch_ids), seqlen, hidden_dim])
                 # out_tensor = concat([x.slice([batch_id], axis=0, uid=x.uid + f"_slice[{batch_id}]") for batch_id in batch_ids], axis=0)
 
                 # once all unicasts are done, perform a multicast within the DP cluster for the next layer
@@ -1177,22 +1173,11 @@ class DSv3DecodeLayer(Layer):
         if not is_prefill:
             assert seqlen == 1
 
-        # self.attention.forward(bsz_per_device_attn, seqlen, ctx_len, stats=stats)
         x = self.attention.forward(x, ctx_len, stats=stats)
 
-        # if is_prefill and self.dist_info.sp > 1:
-        #     local_seqlens = divide_equal(seqlen, self.dist_info.sp)
-        #     start = sum(local_seqlens[:self.dist_info.rank_sp])
-        #     end = start + local_seqlens[self.dist_info.rank_sp]
-        #     assert end > start
-        #     x = x.slice(list(range(start, end)), axis=1)
+        # self.ffn.forward(x, stats=stats)
 
-        # seqlen_per_device_ffn = intceil(seqlen/self.dist_info.sp) # This is only effective in prefill, seqlen=1 in decode anyway
-        # self.ffn.forward(bsz_per_device_ffn*seqlen_per_device_ffn, stats=stats)
-        # self.ffn.forward(bsz*seqlen_per_device_ffn, stats=stats)
-        self.ffn.forward(x, stats=stats)
-
-        return Tensor(self.layer_id+"_out", x.dims)
+        return Tensor(self.layer_id+"_out", self.dist_info.rank, x.dims)
 
     def memory_footprint(self, bsz, ctx_len):
         # batch_ids = get_itemids_from_bucketid(self.dist_info.rank_dp_attn, bsz, self.dist_info.dp_attn)
@@ -1215,7 +1200,7 @@ class LMHead(Layer):
         logging.info("Creating LMHead layer {}".format(layer_id))
 
         vocab_size_per_device = intceil(vocab_size/dist_info.num_nodes)
-        self.head = Linear(uid=layer_id+"_head", in_features=hidden_size, out_features=vocab_size_per_device, dtype=dtype)
+        self.head = Linear(uid=layer_id+"_head", in_features=hidden_size, out_features=vocab_size_per_device, dist_info=dist_info, dtype=dtype)
 
     def forward(self, x, stats):
         self.head.forward(x, stats=stats)

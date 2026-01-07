@@ -4,28 +4,22 @@ from typing import List
 from utils import dtype_to_byte
 
 class Tile:
-    def __init__(self, id, dims, prec) -> None:
+    def __init__(self, id, parent, indices, prec) -> None:
         self.id = id
-        self.dims = dims
-        self.mem_bank = None
+        self.parent = parent # Parent tensor
+        self.indices = indices # indices in the form of [(start1, end1), (start2, end2), ...]
+        self.dims = [end - start for start, end in indices]
+        # self.mem_bank = None
         self.prec = prec # in str, e.g., "fp16", "fp8"
         logging.debug("Tile {} is created with dims {}.".format(self.id, self.dims, self.prec))
 
-    def map_to_memory(self, mem_bank: "MemoryBank"):
-        assert self.mem_bank is None, "Tile {} is already mapped to memory {}.".format(self.id, self.mem_bank.bank_id)
-        self.mem_bank = mem_bank
-        mem_bank.alloc_tile(self)
-        logging.debug("Tile {} is mapped to memory {}.".format(self.id, self.mem_bank.bank_id))
-
-    def is_mapped(self):
-        return self.mem_bank is not None
-
-    def get_memsize(self):
-        memsize = 1 
-        for d in self.dims:
-            memsize *= d
-        return memsize * dtype_to_byte(self.prec)
-
+    '''    
+    Get the physical address of the tile in the parent tensor's memory.
+    Returns:
+        mem_sizes: Dictionary mapping MemoryBank objects to the size of data in bytes stored in each bank for the given index range.
+    '''
+    def get_physical_address(self):
+        return self.parent.get_physical_address(self.indices)
 
 def load_tiling_config(filepath: str, layer_type: str, dims: List[int]) -> List[int]:
     with open(filepath, "r") as f:

@@ -28,6 +28,6 @@ class Generator:
                 ctx_len = prefill_len + i
                 seqlen_q = 1
 
-                queries = Tensor("queries", [bsz, seqlen_q, model.hidden_size])
+                queries = Tensor("queries", model.dist_info.rank, [bsz, seqlen_q, model.hidden_size])
                 model.forward(queries, ctx_len=ctx_len, iter_id=i+1)
 

@@ -3,7 +3,6 @@ import logging
 from typing import List
 
 
-
 def write_to_csv(dat, fname):
     if not os.path.exists(os.path.dirname(fname)):
         os.makedirs(os.path.dirname(fname))
@@ -68,14 +67,22 @@ class Wafer:
     def get_core(self, node_id: int, local_id: int) -> Core:
         return self.cores[node_id][local_id]
     
+    def get_traces(self):
+        traces = {}
+        for node_id in range(self.num_nodes):
+            traces[node_id] = {}
+            for core_id in range(self.num_cores_per_node):
+                traces[node_id][core_id] = self.cores[node_id][core_id].generate_traces()
+        return traces
+
     def export_traces(self, iter:int, dir_path: str):
+        traces = self.get_traces()
         for node_id in range(self.num_nodes):
             for core_id in range(self.num_cores_per_node):
-                traces = self.cores[node_id][core_id].generate_traces()
 
-                for trace in traces:
+                for trace in traces[node_id][core_id]:
                     logging.debug("Core {}: {}".format(core_id, trace))
 
                 out_fname = dir_path + "/node_{}/{}/core_{}.csv".format(node_id, iter, core_id)
-                write_to_csv(traces, out_fname)
+                write_to_csv(traces[node_id][core_id], out_fname)
 

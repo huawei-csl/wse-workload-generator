@@ -6,6 +6,7 @@ from stats import RuntimeStats
 from utils import intceil, divide_equal
 from workload import get_moe_gate_model
 from compute_graph import get_compute_graph
+from tensor import reset_tensor_registry, Slice
 
 class Model:
     def __init__(self, model_config, dist_info, dtype, out_dir) -> None:
@@ -15,6 +16,7 @@ class Model:
         self.dist_info = dist_info
         
     def new_iter(self, iter_id, bsz, seqlen):
+        reset_tensor_registry()
         self.stats.new_iter(iter_id)
         if self.moe_gate_model:
             bsz_per_device = intceil(bsz/self.dist_info.dp_ffn)
@@ -48,14 +50,16 @@ class Model:
         x = queries
 
         batch_ids = self.dist_info.get_local_batchids("attn")
-        x = x.slice(batch_ids, axis=0)
+        x = Slice(x, batch_ids, axis=0).forward(self.stats)
+        # x = x.slice(batch_ids, axis=0)
 
         if is_prefill and self.dist_info.sp > 1:
             local_seqlens = divide_equal(seqlen, self.dist_info.sp)
             start = sum(local_seqlens[:self.dist_info.rank_sp])
             end = start + local_seqlens[self.dist_info.rank_sp]
             assert end > start
-            x = x.slice(list(range(start, end)), axis=1)
+            x = Slice(x, list(range(start, end)), axis=1).forward(self.stats)
+            # x = x.slice(list(range(start, end)), axis=1)
 
         for l in range(len(self.layers)):
             x = self.layers[l].forward(x, ctx_len, self.stats)
