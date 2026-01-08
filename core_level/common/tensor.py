@@ -35,7 +35,7 @@ class Tensor:
     def __new__(cls, uid, dims, prec, *args, **kwargs):
         if TensorRegistry.is_exist(uid):
             existing_tensor = TensorRegistry.get(uid)
-            assert existing_tensor.dims == dims, "Tensor dimensions do not match for uid {}. existing dims: {} new dims: {}".format(uid, existing_tensor.dims, dims)
+            assert existing_tensor._dims_match(dims), "Tensor dimensions do not match for uid {}. existing dims: {} new dims: {}".format(uid, existing_tensor.dims, dims)
             assert existing_tensor.prec == prec, "Tensor precision does not match for uid {}. existing prec: {} new prec: {}".format(uid, existing_tensor.prec, prec)
             return existing_tensor
         return super().__new__(cls)
@@ -332,9 +332,171 @@ class Tensor:
         # Simply call the get_physical_address function with the full index range
         ind_rng = [(0, d) for d in self.dims]
         return self.get_physical_address(ind_rng)
-    
+
+    def is_squeezable(self, target_dims):
+        my_dims = list(self.dims)
+        actions = []
+
+        i = 0
+        j = 0
+
+        while True:
+            if i >= len(my_dims) and j >= len(target_dims):
+                return True, actions # both reached the end
+            
+            elif i >= len(my_dims):
+                if target_dims[j] != 1:
+                    return False, [] # my dims reached end, but target dims has non-1 dim left
+                # my dims reached end, but target dims has 1, so unsqueeze myself once
+                actions.append("u")
+                j += 1
+
+            elif j >= len(target_dims):
+                if my_dims[i] != 1:
+                    return False, [] # target reached end, but my dims has non-1 dim left
+                # target reached end, but I still have a 1, so squeeze myself once
+                actions.append("s") 
+                i += 1
+
+            else:
+                if my_dims[i] == target_dims[j]:
+                    # dims match, do nothing but move on
+                    i += 1
+                    j += 1
+                    actions.append(None)
+
+                elif my_dims[i] == 1:
+                    # my dims has a 1, so squeeze myself once
+                    actions.append("s")
+                    i += 1
+
+                elif target_dims[j] == 1:
+                    # target dims has a 1, so unsqueeze myself once
+                    actions.append("u")
+                    j += 1
+
+                else:
+                    # dims do not match, thus not squeezable
+                    return False, []
+
+    def dims_match(self, other_dims):
+        if len(other_dims) != len(self.dims):
+            return False 
+
+        for i in range(len(self.dims)):
+            if other_dims[i] != self.dims[i]:
+                return False
+            
+        return True 
+
+    def squeeze(self, dim):
+        def _remove_dim_recurse(mmap, curr_dim, target_dim):
+            if curr_dim < target_dim:
+                for key in mmap:
+                    _remove_dim_recurse(mmap[key], curr_dim + 1, target_dim)
+            elif curr_dim == target_dim:
+                assert len(mmap) == 1, "Cannot squeeze dimension {} with size greater than 1.".format(target_dim)
+
+                key = list(mmap.keys())[0]
+
+                tmp_map = mmap[key]
+                for i in mmap[key]:
+                    mmap[i] = tmp_map[i]
+            else:
+                assert False, "Should not reach here."
+
+        def _update_slice_range(mmap, dim):
+            if "range" in mmap:
+                mmap["range"].pop(dim)
+                return
+            else:
+                for key in mmap:
+                    _update_slice_range(mmap[key], dim)
+
+        assert -self.n_dims <= dim < self.n_dims, "Dimension out of bounds."
+        if dim < 0:
+            dim += self.n_dims
+
+        assert self.dims[dim] == 1, "Cannot squeeze dimension {} with size {}.".format(dim, self.dims[dim])
+
+        self.dims.pop(dim)
+        self.n_dims = len(self.dims)
+
+        self.tile_size.pop(dim)
+
+        _remove_dim_recurse(self.memory_map, 0, dim)
+        _update_slice_range(self.memory_map, dim)
+
+    def unsqueeze(self, dim):
+        def _add_dim_recurse(mmap, curr_dim, target_dim):
+            if curr_dim < target_dim:
+                for key in mmap:
+                    _add_dim_recurse(mmap[key], curr_dim + 1, target_dim)
+            elif curr_dim == target_dim:
+                tmp_mmap = dict(mmap)
+                mmap.clear()
+                mmap[0] = tmp_mmap
+            else:
+                assert False, "Should not reach here."
+
+        def _update_slice_range(mmap, dim):
+            if "range" in mmap:
+                mmap["range"].insert(dim, (0,1))
+                return
+            else:
+                for key in mmap:
+                    _update_slice_range(mmap[key], dim)
+            
+        assert -self.n_dims <= dim < self.n_dims, "Dimension out of bounds."
+        if dim < 0:
+            dim += self.n_dims
+
+        self.dims.insert(dim, 1)
+        self.n_dims = len(self.dims)
+
+        self.tile_size.insert(dim, 1)
+        
+        _add_dim_recurse(self.memory_map, 0, dim)
+        _update_slice_range(self.memory_map, dim)
+
+    def expand_dims(self, new_dims):
+        is_squeezable, actions = self.is_squeezable(new_dims)
+        assert is_squeezable, "Cannot expand tensor {} by squeezing/unsqueezing from dims {} to new dims {}.".format(self.uid, self.dims, new_dims)
+
+        d = 0
+        for action in actions:
+            if action == "s":
+                self.squeeze(d)
+            elif action == "u":
+                self.unsqueeze(d)
+                d += 1
+            else:
+                d += 1        
+
+        assert self.dims == new_dims, "Dims do not match after squeeze/unsqueeze. my_dims: {}, target: {}".format(self.dims, new_dims)
+
     def clone(self, new_uid):
         new_tensor = Tensor(new_uid, list(self.dims), self.prec)
         new_tensor.tile_size = list(self.tile_size)
         new_tensor.memory_map = dict(self.memory_map)
         return new_tensor
+
+if __name__=="__main__":
+    from core_level.common.wafer import Wafer
+
+    wafer = Wafer([4,4], [6,6])
+
+    reset_tensor_registry()
+    
+    node_id = 0
+    orig_dims = [32, 2, 1]
+    target_dims = [32, 1, 1, 2]
+    tile_size = [1, 1, 1, 1]
+    addr_offset = 0
+
+    tensor_a = Tensor("A", orig_dims, "fp16")
+    tensor_a.map_to_memory(wafer.banks[node_id], tile_size, addr_offset=addr_offset)
+
+    print("dims match? {}, my_dims: {}, target: {}".format(tensor_a.dims_match(target_dims), tensor_a.dims, target_dims))
+
+    tensor_a.expand_dims(target_dims)
