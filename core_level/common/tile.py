@@ -4,12 +4,12 @@ from typing import List
 from utils import dtype_to_byte
 
 class Tile:
-    def __init__(self, id, parent, indices, prec) -> None:
+    def __init__(self, id, parent, indices, prec, trans=False) -> None:
         self.id = id
         self.parent = parent # Parent tensor
         self.indices = indices # indices in the form of [(start1, end1), (start2, end2), ...]
         self.dims = [end - start for start, end in indices]
-        # self.mem_bank = None
+        self.trans = trans # whether the tile is transposed
         self.prec = prec # in str, e.g., "fp16", "fp8"
         logging.debug("Tile {} is created with dims {}.".format(self.id, self.dims, self.prec))
 
@@ -19,7 +19,8 @@ class Tile:
         mem_sizes: Dictionary mapping MemoryBank objects to the size of data in bytes stored in each bank for the given index range.
     '''
     def get_physical_address(self):
-        return self.parent.get_physical_address(self.indices)
+        indices = self.indices if self.trans==False else self.indices[:-2] + [self.indices[-1], self.indices[-2]]
+        return self.parent.get_physical_address(indices)
 
 def load_tiling_config(filepath: str, layer_type: str, dims: List[int]) -> List[int]:
     with open(filepath, "r") as f:

@@ -35,7 +35,15 @@ class Tensor:
     def __new__(cls, uid, dims, prec, *args, **kwargs):
         if TensorRegistry.is_exist(uid):
             existing_tensor = TensorRegistry.get(uid)
-            assert existing_tensor._dims_match(dims), "Tensor dimensions do not match for uid {}. existing dims: {} new dims: {}".format(uid, existing_tensor.dims, dims)
+
+            is_dims_match = existing_tensor.dims_match(dims)
+            if not is_dims_match:
+                is_squeezable = existing_tensor.is_squeezable(dims)
+                assert is_squeezable, "Tensor dimensions do not match for uid {} and not squeezable/unsqueezable. existing dims: {} new dims: {}".format(uid, existing_tensor.dims, dims)
+            
+                existing_tensor.expand_dims(dims)
+
+            assert existing_tensor.dims == dims, "Tensor dimensions do not match for uid {}. existing dims: {} new dims: {}".format(uid, existing_tensor.dims, dims)
             assert existing_tensor.prec == prec, "Tensor precision does not match for uid {}. existing prec: {} new prec: {}".format(uid, existing_tensor.prec, prec)
             return existing_tensor
         return super().__new__(cls)
@@ -63,11 +71,11 @@ class Tensor:
     Returns:
         Tile object representing the sliced tensor.
     '''
-    def slice(self, indices):
+    def slice(self, indices, trans=False):
         assert len(indices) == len(self.dims), "Slice range does not match tensor dimensions."
         
         tile_id = "{}[{}]".format(self.uid, ",".join([f"{start}:{end}" for start, end in indices]))
-        tile = Tile(tile_id, self, indices, prec=self.prec)
+        tile = Tile(tile_id, self, indices, prec=self.prec, trans=trans)
         
         return tile
 

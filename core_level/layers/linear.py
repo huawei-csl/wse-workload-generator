@@ -13,6 +13,9 @@ class TileGemmOp:
         self.input_tile = input_tile
         self.weight_tile = weight_tile
         self.out_tile = out_tile
+
+        assert self.input_tile.dims[1] == self.weight_tile.dims[0], "TileGemmOp {} has incompatible input tile {} and weight tile {}.".format(self.id, self.input_tile.id, self.weight_tile.id)
+
         self.mapped_core = None
         logging.debug("TileGemmOp {} is created with input tile {}, weight tile {}, out tile {}.".format(self.id, self.input_tile.id, self.weight_tile.id, self.out_tile.id))
 
@@ -31,22 +34,18 @@ class TileGemmOp:
         # Read input tile from memory
         mem_sizes = self.input_tile.get_physical_address()
         for bank, size in mem_sizes.items():
-            # traces.append("READ {} {} {}".format(self.input_tile.id, bank.bank_id, size))
             traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
 
         # Read weight tile from memory
         mem_sizes = self.weight_tile.get_physical_address()
         for bank, size in mem_sizes.items():
-            # traces.append("READ {} {} {}".format(self.weight_tile.id, bank.bank_id, size))
             traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
 
-        # traces.append("GEMM {} {} {} {}".format(self.input_tile.id, self.weight_tile.id, self.out_tile.id, "{}x{}x{}".format(M, K, N)))
         traces.append(InstructionSet.GEMM([M, K, N], self.id))
 
         # Write output tile back to memory
         mem_sizes = self.out_tile.get_physical_address()
         for bank, size in mem_sizes.items():
-            # traces.append("WRITE {} {} {}".format(self.out_tile.id, bank.bank_id, size))
             traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id))
         
         return traces
@@ -58,30 +57,35 @@ class LinearLayer:
         node_id: node where the layer is mapped
         graph: compute graph object
         dims: dimensions of the GEMM operation (M, K, N)
+        tile_size: tile size for the GEMM operation (Tm, Tk, Tn)
+        trans: list of booleans indicating whether to transpose input and weight tensors
         wafer: Wafer object representing the hardware architecture
         prec: precision of the data (e.g., "fp16", "fp8")
     '''
-    def __init__(self, uid, node_id, graph, dims, tile_size, wafer, prec) -> None:
+    def __init__(self, uid, node_id, graph, dims, tile_size, trans, wafer, prec) -> None:
         assert len(dims) == 3, "dims should be a tuple of (M, K, N)"
 
         self.uid = uid
         self.node_id = node_id
         self.dims = dims
         self.tile_size = tile_size
+        self.trans = trans
         self.wafer = wafer
         self.prec = prec
 
         self.graph_op = graph.get_op(node_id, uid)
         
+        input_dims = [dims[0], dims[1]] if trans[0] == False else [dims[1], dims[0]]
         self.input_tensor = Tensor(
             uid=self.graph_op["inputs"][0],
-            dims=[dims[0], dims[1]],
+            dims=input_dims,
             prec=self.prec,
         )
 
+        weight_dims = [dims[1], dims[2]] if trans[1] == False else [dims[2], dims[1]]
         self.weight_tensor = Tensor(
             uid=self.uid + "_weight",
-            dims=[dims[1], dims[2]],
+            dims=weight_dims,
             prec=self.prec,
         )
 
@@ -115,7 +119,7 @@ class LinearLayer:
                 tiled_M = min(Tm, M - pM)
                 tiled_K = min(Tk, K - pK)
 
-                self.input_tiles[m][k] = self.input_tensor.slice([(m*Tm, m*Tm + tiled_M), (k*Tk, k*Tk + tiled_K)])
+                self.input_tiles[m][k] = self.input_tensor.slice([(m*Tm, m*Tm + tiled_M), (k*Tk, k*Tk + tiled_K)], trans=self.trans[0])
 
         self.weight_tensor.map_to_memory(self.wafer.banks[self.node_id], tile_size=[Tk, Tn], addr_offset=0)
         for k, pK in enumerate(range(0, K, Tk)):
@@ -123,7 +127,8 @@ class LinearLayer:
             for n, pN in enumerate(range(0, N, Tn)):
                 tiled_N = min(Tn, N - pN)
                 tiled_K = min(Tk, K - pK)
-                self.weight_tiles[k][n] = self.weight_tensor.slice([(k*Tk, k*Tk + tiled_K), (n*Tn, n*Tn + tiled_N)])
+
+                self.weight_tiles[k][n] = self.weight_tensor.slice([(k*Tk, k*Tk + tiled_K), (n*Tn, n*Tn + tiled_N)], trans=self.trans[1])
 
         # Split-K requires partial sum tiles
         if K != Tk:
@@ -200,3 +205,49 @@ class LinearLayer:
                 core_id = list(mem_sizes.keys())[0].local_id
 
                 self.reduce_ops[m][n].map_to_core(self.wafer.get_core(self.node_id, core_id))
+
+if __name__=="__main__":
+    from core_level.common.wafer import Wafer
+    from core_level.common.tensor import reset_tensor_registry
+    from core_level.common.graph import Graph
+
+    reset_tensor_registry()
+
+    node_grid = (1, 1)
+    core_grid = (4, 4)
+
+    wafer = Wafer(node_grid, core_grid)
+
+    ops = {}
+    for node_id in range(wafer.num_nodes):
+        ops[node_id] = {}
+        op_id = f"{node_id}:linear_0"
+        ops[node_id][op_id] = {
+            "type": "Linear",
+            "inputs": [f"{node_id}:input_tensor"],
+            "outputs": [f"{node_id}:output_tensor"]
+        }
+    
+    graph = Graph(iter=0, num_nodes=wafer.num_nodes, ops=ops)
+
+    dims = [8, 4, 2]
+    tile_size = [2, 2, 2]
+    trans = [False, False]
+
+    input_tensor = Tensor(
+        uid="0:input_tensor",
+        dims=[dims[1], dims[0]] if trans[0] else [dims[0], dims[1]],
+        prec="fp16",
+    )
+
+    for node_id in range(wafer.num_nodes):
+        layer = LinearLayer(f"{node_id}:linear_0", node_id, graph, dims, tile_size, trans, wafer, prec="fp16")
+
+    traces = wafer.get_traces()
+    for node_id in traces:
+        for core_id in range(wafer.num_cores_per_node):
+            print(core_id)
+            for trace in traces[node_id][core_id]:
+                parsed_instr = InstructionSet.parse(trace)
+                print(parsed_instr)
+
