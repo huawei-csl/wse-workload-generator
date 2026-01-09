@@ -75,7 +75,7 @@ class View:
         self.output_tensor = Tensor(self.uid, input_tensor.node_id, new_dims)
 
     def forward(self, stats):
-        stats.append(self.uid, "View", 0, 0, 0, 0, comm_group=None, dims=f"{self.input_tensor.dims}->{self.new_dims}")
+        stats.append(self.uid, "View", 0, 0, 0, 0, comm_group=None, dims=f"{self.input_tensor.dims} -> {self.new_dims}")
         get_compute_graph().add_node(self, [self.input_tensor], [self.output_tensor], attrs=None)        
         return self.output_tensor
 
@@ -94,7 +94,7 @@ class Transpose:
         self.output_tensor = Tensor(self.uid, input_tensor.node_id, new_dims)
 
     def forward(self, stats):
-        stats.append(self.uid, "Transpose", 0, 0, 0, 0, comm_group=None, dims=f"{self.trans_dims}->{self.input_tensor.dims}->{self.output_tensor.dims}")
+        stats.append(self.uid, "Transpose", 0, 0, 0, 0, comm_group=None, dims=f"{self.trans_dims} -> {self.input_tensor.dims} -> {self.output_tensor.dims}")
         get_compute_graph().add_node(self, [self.input_tensor], [self.output_tensor], attrs=None)
         return self.output_tensor
 
@@ -107,6 +107,9 @@ class Split:
             self.uid = uid
 
         self.input_tensor = input_tensor
+        self.split_dims = split_dims
+        self.axis = axis
+
         self.dims = list(input_tensor.dims)
 
         if axis < 0:
@@ -121,7 +124,7 @@ class Split:
         ]
 
     def forward(self, stats):
-        stats.append(self.uid, "Split", 0, 0, 0, 0, comm_group=None, dims=self.dims)
+        stats.append(self.uid, "Split", 0, 0, 0, 0, comm_group=None, dims=f"{self.axis} -> {self.split_dims} -> {self.dims}")
         get_compute_graph().add_node(self, [self.input_tensor], [tensor for tensor in self.output_tensors], attrs=None)        
         return self.output_tensors
 
@@ -169,6 +172,10 @@ class Concat:
         else:
             self.uid = uid
 
+        self.axis = axis
+
+        assert len(input_tensors) == 2, "Only support concatenating two tensors for now"
+
         node_id = input_tensors[0].node_id
         for tensor in input_tensors[1:]:
             assert tensor.node_id == node_id, "All input tensors must belong to the same node"
@@ -189,6 +196,6 @@ class Concat:
         self.output_tensor = Tensor(self.uid, node_id, list(self.new_dims))
 
     def forward(self, stats):
-        stats.append(self.uid, "Concat", 0, 0, 0, 0, comm_group=None, dims=self.new_dims)
+        stats.append(self.uid, "Concat", 0, 0, 0, 0, comm_group=None, dims=f"{self.axis} -> {self.input_tensors[0].dims} -> {self.input_tensors[1].dims}")
         get_compute_graph().add_node(self, [tensor for tensor in self.input_tensors], [self.output_tensor], attrs=None)        
         return self.output_tensor

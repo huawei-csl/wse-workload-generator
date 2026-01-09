@@ -29,16 +29,12 @@ class TileReduceOp:
         for tile in self.in_tiles:
             mem_sizes = tile.get_physical_address()
             for bank, size in mem_sizes.items():
-                # traces.append("READ {} {} {}".format(tile.id, bank.bank_id, size))
                 traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
-
-            # traces.append("ADD {} {} {} {}".format(tile.id, self.out_tile.id, self.out_tile.id, "x".join([str(d) for d in self.out_tile.dims])))
             traces.append(InstructionSet.ADD(self.out_tile.dims, self.id))
 
         # Write output tile back to memory
         mem_sizes = self.out_tile.get_physical_address()
         for bank, size in mem_sizes.items():
-            # traces.append("WRITE {} {} {}".format(self.out_tile.id, bank.bank_id, size))
             traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id))
         
         return traces

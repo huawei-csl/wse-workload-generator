@@ -1,4 +1,3 @@
-
 import pytest
 
 from core_level.layers.view import View

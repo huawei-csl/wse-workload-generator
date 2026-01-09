@@ -21,11 +21,11 @@ class View:
                 first = i
                 if input_dims[i] > output_dims[i]:
                     self.view_type = "split"
-                    assert input_dims[:first] == output_dims[:first] and input_dims[first+1:] == output_dims[first+2:], "View operation support only splitting one dimension into two."
+                    assert input_dims[:first] == output_dims[:first] and input_dims[first+1:] == output_dims[first+2:], "View operation {} on node {} support only splitting one dimension into two: input_dims {} vs output_dims {}.".format(uid, node_id, input_dims, output_dims)
                     assert input_dims[first] == output_dims[first] * output_dims[first+1], "View operation {} on node {} has incompatible dimensions: input_dims {} vs output_dims {}.".format(uid, node_id, input_dims, output_dims)
                 else:
                     self.view_type = "merge"
-                    assert input_dims[:first] == output_dims[:first] and input_dims[first+2:] == output_dims[first+1:], "View operation support only merging two dimensions into one."
+                    assert input_dims[:first] == output_dims[:first] and input_dims[first+2:] == output_dims[first+1:], "View operation {} on node {} support only merging two dimensions into one: input_dims {} vs output_dims {}.".format(uid, node_id, input_dims, output_dims)
                     assert output_dims[first] == input_dims[first] * input_dims[first+1], "View operation {} on node {} has incompatible dimensions: input_dims {} vs output_dims {}.".format(uid, node_id, input_dims, output_dims)
                 break
 
@@ -186,7 +186,7 @@ if __name__ == "__main__":
         ops[node_id][op_id] = {
             "type": "View",
             "inputs": [f"{node_id}:input_tensor"],
-            "outputs": [f"{node_id}:output_tensor"]
+            "outputs": [f"{node_id}:input_tensor"]
         }
     
     graph = Graph(iter=0, num_nodes=wafer.num_nodes, ops=ops)

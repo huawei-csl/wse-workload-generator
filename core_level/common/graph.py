@@ -22,8 +22,8 @@ class Graph:
                 for row in csv_reader:
                     op_id = row["uid"]
                     op_type = row["Op Type"]
-                    inputs = row["Inputs"][2:-2].split(", ")
-                    outputs = row["Outputs"][2:-2].split(", ")
+                    inputs = row["Inputs"][1:-1].replace("'","").split(", ")
+                    outputs = row["Outputs"][1:-1].replace("'","").split(", ")
 
                     ops[node_id][op_id] = {"type": op_type, "inputs": inputs, "outputs": outputs}
 

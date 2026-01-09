@@ -7,17 +7,17 @@ from typing import List
 from core_level.common.tensor import Tensor
 
 class Transpose:
-    def __init__(self, uid, node_id, trans_dims, input_dims, output_dims, graph, prec) -> None:
+    def __init__(self, uid, node_id, axes, input_dims, output_dims, graph, prec) -> None:
         self.uid = uid
         self.node_id = node_id
-        self.trans_dims = trans_dims
+        self.axes = axes
         self.input_dims = input_dims
         self.output_dims = output_dims
         self.prec = prec
 
-        assert len(trans_dims) == 2, "Transpose supports transposing only two dimensions."
+        assert len(axes) == 2, "Transpose supports transposing only two dimensions."
         assert eval("*".join([str(d) for d in input_dims])) == eval("*".join([str(d) for d in output_dims])), "Transpose operation {} on node {} has incompatible dimensions: input_dims {} vs output_dims {}.".format(uid, node_id, input_dims, output_dims)
-        assert input_dims[trans_dims[0]] == output_dims[trans_dims[1]] and input_dims[trans_dims[1]] == output_dims[trans_dims[0]], "Transpose operation {} on node {} has incompatible dimensions: trans_dims: {} input_dims {} vs output_dims {}.".format(uid, node_id, trans_dims, input_dims, output_dims)
+        assert input_dims[axes[0]] == output_dims[axes[1]] and input_dims[axes[1]] == output_dims[axes[0]], "Transpose operation {} on node {} has incompatible dimensions: axes: {} input_dims {} vs output_dims {}.".format(uid, node_id, trans_dims, input_dims, output_dims)
 
         self.graph_op = graph.get_op(node_id, uid)
 
@@ -27,7 +27,7 @@ class Transpose:
             prec=self.prec,
         )
 
-        td0, td1 = trans_dims
+        td0, td1 = axes
         new_tile_size = list(self.input_tensor.tile_size)
         new_tile_size[td0] = self.input_tensor.tile_size[td1]
         new_tile_size[td1] = self.input_tensor.tile_size[td0]
@@ -57,7 +57,7 @@ class Transpose:
                 tmp_dict = tmp_dict[i]
             tmp_dict[ind[-1]] = value
 
-        td0, td1 = self.trans_dims
+        td0, td1 = self.axes
         new_map = {}
 
         tmp_dict = self.input_tensor.memory_map
@@ -112,15 +112,15 @@ if __name__== "__main__":
     input_dims = [4, 8, 6]
     tile_size = [2, 2, 3]
     node_id = 0
-    trans_dims = [1, 2]
+    axes = [1, 2]
     output_dims = list(input_dims)
-    output_dims[trans_dims[0]] = input_dims[trans_dims[1]]
-    output_dims[trans_dims[1]] = input_dims[trans_dims[0]]
+    output_dims[axes[0]] = input_dims[axes[1]]
+    output_dims[axes[1]] = input_dims[axes[0]]
 
     tensor_a = Tensor(f"{node_id}:input_tensor", input_dims, "fp16")
     tensor_a.map_to_memory(wafer.banks[node_id], tile_size, addr_offset=0)
 
-    layer = Transpose(f"{node_id}:transpose_0", node_id, trans_dims, input_dims, output_dims, graph, "fp16")
+    layer = Transpose(f"{node_id}:transpose_0", node_id, axes, input_dims, output_dims, graph, "fp16")
 
     assert tensor_a.get_mem_footprint() == layer.output_tensor.get_mem_footprint(), "Input and output tensor memory footprint do not match.".format()
 

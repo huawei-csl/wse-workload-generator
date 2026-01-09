@@ -9,6 +9,10 @@ from logger import init_logger
 from core_level.common import Wafer
 from core_level.layers import LinearLayer, GroupedLinearLayer, MLALayer, UnicastLayer, MulticastLayer, AllreduceLayer
 from core_level.layers.view import View
+from core_level.layers.split import Split
+from core_level.layers.transpose import Transpose
+from core_level.layers.concat import Concat
+
 from core_level.common.graph import init_graph
 from core_level.common.tile import load_tiling_config
 
@@ -135,13 +139,40 @@ def generate_traces(args):
 
             elif row["operation"] == "View":
                 layer_id = row["uid"]
-                input_dims = list(map(int, row["Dimensions"].split("->")[0][1:-1].split(", ")))
-                output_dims = list(map(int, row["Dimensions"].split("->")[1][1:-1].split(", ")))
+                input_dims = list(map(int, row["Dimensions"].split(" -> ")[0][1:-1].split(", ")))
+                output_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
 
                 View(layer_id, node_id, input_dims, output_dims, graph, prec)
+
+            elif row["operation"] == "Split":
+                layer_id = row["uid"]
+                axis = int(row["Dimensions"].split(" -> ")[0])
+                split_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
+                input_dims = list(map(int, row["Dimensions"].split(" -> ")[2][1:-1].split(", ")))
+
+                Split(layer_id, node_id, axis, split_dims, input_dims, graph, prec)
+
+            elif row["operation"] == "Transpose":
+                layer_id = row["uid"]
+
+                axes = list(map(int, row["Dimensions"].split(" -> ")[0][1:-1].split(", ")))
+                input_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
+                output_dims = list(map(int, row["Dimensions"].split(" -> ")[2][1:-1].split(", ")))
+
+                Transpose(layer_id, node_id, axes, input_dims, output_dims, graph, prec)
+            
+            elif row["operation"] == "Concat":
+                layer_id = row["uid"]
+
+                axis = int(row["Dimensions"].split(" -> ")[0])
+                input0_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
+                input1_dims = list(map(int, row["Dimensions"].split(" -> ")[2][1:-1].split(", ")))
+
+                Concat(layer_id, node_id, axis, [input0_dims, input1_dims], graph, prec)
+
             else:
-                pass
-                # raise NotImplementedError("Operation {} not implemented.".format(row["operation"])) 
+                # raise NotImplementedError
+                logging.warning("Operation {} not recognized.".format(row["operation"]))
 
     wafer.export_traces(args.iter, "traces/decode")
 

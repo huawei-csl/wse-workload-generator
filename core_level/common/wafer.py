@@ -18,16 +18,21 @@ class Core:
         self.local_id = local_id
         self.core_id = node_id * num_cores_per_node + local_id
         self.instruction_queue = []
+        self.traces = []
 
     def add_instruction(self, tile_op: "TileGemmOp"):
         self.instruction_queue.append(tile_op)
+        self.traces += tile_op.get_traces()
         logging.debug("TileGemmOp {} is added to core {} instruction queue.".format(tile_op.id, self.core_id))
 
-    def generate_traces(self):
-        traces = []
-        for op in self.instruction_queue:
-            traces += op.get_traces()
-        return traces
+    def get_traces(self):
+        return self.traces
+
+    # def generate_traces(self):
+        
+    #     for op in self.instruction_queue:
+    #         traces += op.get_traces()
+    #     return traces
     
 class MemoryBank:
     def __init__(self, node_id: int, local_id: int, num_banks_per_node: int) -> None:
@@ -72,7 +77,7 @@ class Wafer:
         for node_id in range(self.num_nodes):
             traces[node_id] = {}
             for core_id in range(self.num_cores_per_node):
-                traces[node_id][core_id] = self.cores[node_id][core_id].generate_traces()
+                traces[node_id][core_id] = self.cores[node_id][core_id].get_traces()
         return traces
 
     def export_traces(self, iter:int, dir_path: str):

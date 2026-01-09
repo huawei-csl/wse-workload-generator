@@ -761,24 +761,25 @@ class MLAAbsorbBlock(Layer):
 
         q_nope = self.ops["wkv_b1"].forward(q_nope, stats=stats)
 
+        q_nope = Transpose(q_nope, [0, 1]).forward(stats=stats)
+
         q_nope = View(q_nope, [local_bsz, seqlen, self.n_local_heads, self.kv_lora_rank]).forward(stats=stats)
 
-        # q = concat([q_nope, q_pe], axis=-1)
         q = Concat([q_nope, q_pe], axis=-1).forward(stats=stats)
 
         attn_out = self.ops["absorb_attn"].forward(q, ctx_len, stats=stats)
-        
+        attn_out = Transpose(attn_out, [0, 2]).forward(stats=stats)
+
         if self.dist_info.sp > 1:
-            # attn_out = attn_out.view([local_bsz, seqlen, self.n_local_heads*self.kv_lora_rank])
             attn_out = View(attn_out, [local_bsz, seqlen, self.n_local_heads*self.kv_lora_rank]).forward(stats=stats)
             attn_out = self.ops["allreduce_sp"].forward(attn_out, stats=stats)
-            # attn_out = attn_out.view([local_bsz, seqlen, self.n_local_heads, self.kv_lora_rank])
             attn_out = View(attn_out, [local_bsz, seqlen, self.n_local_heads, self.kv_lora_rank]).forward(stats=stats)
 
         attn_out = View(attn_out, [self.n_local_heads, local_bsz*seqlen, self.kv_lora_rank]).forward(stats=stats)
         x = self.ops["wkv_b2"].forward(attn_out, stats=stats)
+        x = Transpose(x, [0, 1]).forward(stats=stats)
 
-        # x = x.view([local_bsz, seqlen, self.n_local_heads*self.v_head_dim])
+        x = View(x, [local_bsz, seqlen, self.n_local_heads, self.v_head_dim]).forward(stats=stats)
         x = View(x, [local_bsz, seqlen, self.n_local_heads*self.v_head_dim]).forward(stats=stats)
         y = self.ops["wo"].forward(x, stats=stats)
 
