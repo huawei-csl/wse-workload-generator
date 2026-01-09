@@ -1,9 +1,14 @@
 import logging 
+import itertools
+from copy import deepcopy
 from typing import List 
 
 from core_level.common.tile import Tile
 from utils import dtype_to_byte
 from utils import intceil
+
+
+
 
 def reset_tensor_registry():
     TensorRegistry.reset()
@@ -71,11 +76,11 @@ class Tensor:
     Returns:
         Tile object representing the sliced tensor.
     '''
-    def slice(self, indices, trans=False):
+    def slice(self, indices):
         assert len(indices) == len(self.dims), "Slice range does not match tensor dimensions."
         
         tile_id = "{}[{}]".format(self.uid, ",".join([f"{start}:{end}" for start, end in indices]))
-        tile = Tile(tile_id, self, indices, prec=self.prec, trans=trans)
+        tile = Tile(tile_id, self, indices, prec=self.prec)
         
         return tile
 
@@ -479,7 +484,7 @@ class Tensor:
                 self.unsqueeze(d)
                 d += 1
             else:
-                d += 1        
+                d += 1
 
         assert self.dims == new_dims, "Dims do not match after squeeze/unsqueeze. my_dims: {}, target: {}".format(self.dims, new_dims)
 
@@ -497,14 +502,10 @@ if __name__=="__main__":
     reset_tensor_registry()
     
     node_id = 0
-    orig_dims = [32, 2, 1]
-    target_dims = [32, 1, 1, 2]
-    tile_size = [1, 1, 1, 1]
+    dims = [2, 3]
+    tile_size = [1, 1]
+
     addr_offset = 0
 
-    tensor_a = Tensor("A", orig_dims, "fp16")
+    tensor_a = Tensor("A", dims, "fp16")
     tensor_a.map_to_memory(wafer.banks[node_id], tile_size, addr_offset=addr_offset)
-
-    print("dims match? {}, my_dims: {}, target: {}".format(tensor_a.dims_match(target_dims), tensor_a.dims, target_dims))
-
-    tensor_a.expand_dims(target_dims)

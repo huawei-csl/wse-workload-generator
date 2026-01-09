@@ -4,7 +4,7 @@ from typing import List
 import compute_graph
 from compute_graph import get_compute_graph
 
-from tensor import Tensor, get_tensor, View, Split, Concat, Slice
+from tensor import Tensor, get_tensor, View, Split, Concat, Slice, Transpose
 from utils import dtype_to_byte, intceil, divide_equal, hash_string
 from workload import get_moe_gate_model
 import numpy as np
@@ -754,8 +754,10 @@ class MLAAbsorbBlock(Layer):
         q = View(q, [local_bsz, seqlen, self.n_local_heads, self.qk_head_dim]).forward(stats=stats)
 
         q_nope, q_pe = Split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], axis=-1).forward(stats=stats)
+        
+        q_nope = View(q_nope, [local_bsz*seqlen, self.n_local_heads, self.qk_nope_head_dim]).forward(stats=stats)
 
-        q_nope = View(q_nope, [self.n_local_heads, local_bsz*seqlen, self.qk_nope_head_dim]).forward(stats=stats)
+        q_nope = Transpose(q_nope, [0, 1]).forward(stats=stats)
 
         q_nope = self.ops["wkv_b1"].forward(q_nope, stats=stats)
 

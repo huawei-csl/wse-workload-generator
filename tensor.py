@@ -78,7 +78,27 @@ class View:
         stats.append(self.uid, "View", 0, 0, 0, 0, comm_group=None, dims=f"{self.input_tensor.dims}->{self.new_dims}")
         get_compute_graph().add_node(self, [self.input_tensor], [self.output_tensor], attrs=None)        
         return self.output_tensor
-    
+
+class Transpose:
+    def __init__(self, input_tensor, trans_dims, uid=None) -> None:
+        if uid is None:
+            self.uid = input_tensor.uid + "_transpose"
+        else:
+            self.uid = uid
+
+        self.input_tensor = input_tensor
+        self.trans_dims = trans_dims
+        new_dims = list(input_tensor.dims)
+        new_dims[trans_dims[0]], new_dims[trans_dims[1]] = input_tensor.dims[trans_dims[1]], input_tensor.dims[trans_dims[0]]
+
+        self.output_tensor = Tensor(self.uid, input_tensor.node_id, new_dims)
+
+    def forward(self, stats):
+        stats.append(self.uid, "Transpose", 0, 0, 0, 0, comm_group=None, dims=f"{self.trans_dims}->{self.input_tensor.dims}->{self.output_tensor.dims}")
+        get_compute_graph().add_node(self, [self.input_tensor], [self.output_tensor], attrs=None)
+        return self.output_tensor
+
+
 class Split:
     def __init__(self, input_tensor, split_dims, axis, uid=None) -> None:
         if uid is None:

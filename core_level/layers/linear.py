@@ -58,31 +58,29 @@ class LinearLayer:
         graph: compute graph object
         dims: dimensions of the GEMM operation (M, K, N)
         tile_size: tile size for the GEMM operation (Tm, Tk, Tn)
-        trans: list of booleans indicating whether to transpose input and weight tensors
         wafer: Wafer object representing the hardware architecture
         prec: precision of the data (e.g., "fp16", "fp8")
     '''
-    def __init__(self, uid, node_id, graph, dims, tile_size, trans, wafer, prec) -> None:
+    def __init__(self, uid, node_id, graph, dims, tile_size, wafer, prec) -> None:
         assert len(dims) == 3, "dims should be a tuple of (M, K, N)"
 
         self.uid = uid
         self.node_id = node_id
         self.dims = dims
         self.tile_size = tile_size
-        self.trans = trans
         self.wafer = wafer
         self.prec = prec
 
         self.graph_op = graph.get_op(node_id, uid)
         
-        input_dims = [dims[0], dims[1]] if trans[0] == False else [dims[1], dims[0]]
+        input_dims = [dims[0], dims[1]]
         self.input_tensor = Tensor(
             uid=self.graph_op["inputs"][0],
             dims=input_dims,
             prec=self.prec,
         )
 
-        weight_dims = [dims[1], dims[2]] if trans[1] == False else [dims[2], dims[1]]
+        weight_dims = [dims[1], dims[2]] 
         self.weight_tensor = Tensor(
             uid=self.uid + "_weight",
             dims=weight_dims,
@@ -119,7 +117,7 @@ class LinearLayer:
                 tiled_M = min(Tm, M - pM)
                 tiled_K = min(Tk, K - pK)
 
-                self.input_tiles[m][k] = self.input_tensor.slice([(m*Tm, m*Tm + tiled_M), (k*Tk, k*Tk + tiled_K)], trans=self.trans[0])
+                self.input_tiles[m][k] = self.input_tensor.slice([(m*Tm, m*Tm + tiled_M), (k*Tk, k*Tk + tiled_K)])
 
         self.weight_tensor.map_to_memory(self.wafer.banks[self.node_id], tile_size=[Tk, Tn], addr_offset=0)
         for k, pK in enumerate(range(0, K, Tk)):
@@ -128,7 +126,7 @@ class LinearLayer:
                 tiled_N = min(Tn, N - pN)
                 tiled_K = min(Tk, K - pK)
 
-                self.weight_tiles[k][n] = self.weight_tensor.slice([(k*Tk, k*Tk + tiled_K), (n*Tn, n*Tn + tiled_N)], trans=self.trans[1])
+                self.weight_tiles[k][n] = self.weight_tensor.slice([(k*Tk, k*Tk + tiled_K), (n*Tn, n*Tn + tiled_N)])
 
         # Split-K requires partial sum tiles
         if K != Tk:
@@ -232,16 +230,15 @@ if __name__=="__main__":
 
     dims = [8, 4, 2]
     tile_size = [2, 2, 2]
-    trans = [False, False]
 
     input_tensor = Tensor(
         uid="0:input_tensor",
-        dims=[dims[1], dims[0]] if trans[0] else [dims[0], dims[1]],
+        dims=[dims[1], dims[0]],
         prec="fp16",
     )
 
     for node_id in range(wafer.num_nodes):
-        layer = LinearLayer(f"{node_id}:linear_0", node_id, graph, dims, tile_size, trans, wafer, prec="fp16")
+        layer = LinearLayer(f"{node_id}:linear_0", node_id, graph, dims, tile_size, wafer, prec="fp16")
 
     traces = wafer.get_traces()
     for node_id in traces:
