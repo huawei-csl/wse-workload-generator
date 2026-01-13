@@ -7,6 +7,8 @@ from core_level.common.tile import load_tiling_config
 from core_level.common.wafer import Core
 from core_level.layers.reduce import TileReduceOp
 from core_level.common.isa import InstructionSet
+from core_level.common.stats import Stats
+from utils import byte_to_str, dtype_to_byte
 
 class TileAttnOp:
     def __init__(self, id, q_tile, kv_tile, out_tile) -> None:
@@ -26,6 +28,7 @@ class TileAttnOp:
         assert q_tile.dims[3] == kv_tile.dims[2], "Hidden dimension mismatch in TileAttnOp {}.".format(self.id)
 
         self.mapped_core = None
+        self.stats = Stats()
         logging.debug("TileAttnOp {} is created with q tile {}, kv tile {}, out tile {}.".format(self.id, self.q_tile.id, self.kv_tile.id, self.out_tile.id))
 
     def map_to_core(self, core: "Core"):
@@ -33,7 +36,7 @@ class TileAttnOp:
         self.mapped_core = core
         core.add_instruction(self)
         logging.debug("TileAttnOp {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
-
+    
     def get_traces(self) -> List[str]:
         B, _, H, D = self.q_tile.dims
         _, S_kv, _ = self.kv_tile.dims
@@ -44,28 +47,28 @@ class TileAttnOp:
         # Read query tile from memory
         mem_sizes = self.q_tile.get_physical_address()
         for bank, size in mem_sizes.items():
-            # traces.append("READ {} {} {}".format(self.q_tile.id, bank.bank_id, size))
             traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+            self.stats.add_reads(size)
 
         # Read KV tile from memory
         mem_sizes = self.kv_tile.get_physical_address()
         for bank, size in mem_sizes.items():
-            # traces.append("READ {} {} {}".format(self.kv_tile.id, bank.bank_id, size))
             traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+            self.stats.add_reads(size)
 
         for b in range(B):
-            # traces.append(f"GEMM {self.q_tile.id}[{b}] {self.kv_tile.id}[{b}] {self.out_tile.id}[{b}] {H}x{D}x{S_kv}")
             traces.append(InstructionSet.GEMM([H, D, S_kv], self.id))
+            self.stats.add_cube(self.mapped_core.core_id, 2 * H * D * S_kv)
 
         for b in range(B):
-            # traces.append(f"GEMM {self.q_tile.id}[{b}] {self.kv_tile.id}[{b}] {self.out_tile.id}[{b}] {H}x{S_kv}x{Do}")
             traces.append(InstructionSet.GEMM([H, S_kv, Do], self.id))
+            self.stats.add_cube(self.mapped_core.core_id, 2 * H * S_kv * Do)
 
         # Write output tile back to memory
         mem_sizes = self.out_tile.get_physical_address()
         for bank, size in mem_sizes.items():
-            # traces.append("WRITE {} {} {}".format(self.out_tile.id, bank.bank_id, size))
             traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id))
+            self.stats.add_writes(size)
 
         return traces
 
@@ -78,10 +81,12 @@ class MLALayer:
         q_dims: dimensions of the query tensor (bsz, seqlen_q, num_heads, kv_lora_rank)
         kv_dims: dimensions of the key/value tensor (bsz, seqlen_kv, kv_lora_rank)
         pe_dims: dimensions of the positional encoding tensor (bsz, seqlen_kv, qk_rope_head_dim)
+        q_tile_size: tile size for the query tensor
+        kv_tile_size: tile size for the key/value tensor
         wafer: Wafer object representing the hardware architecture
         prec: precision of the data (e.g., "fp16", "fp8")
     '''
-    def __init__(self, uid, node_id, graph, q_dims, kv_dims, pe_dims, wafer, prec) -> None:
+    def __init__(self, uid, node_id, graph, q_dims, kv_dims, pe_dims, q_tile_size, kv_tile_size, wafer, prec) -> None:
         assert len(q_dims) == 4, "dims should be a tuple of (bsz, seqlen_q, num_heads, kv_lora_rank)"
         assert len(kv_dims) == 3, "dims should be a tuple of (bsz, seqlen_kv, kv_lora_rank)"
         assert len(pe_dims) == 3, "dims should be a tuple of (bsz, seqlen_kv, qk_rope_head_dim)"
@@ -93,8 +98,8 @@ class MLALayer:
         self.pe_dims = pe_dims
         self.wafer = wafer
 
-        self.q_tile_size = load_tiling_config("configs/tiling.json", "AttentionQ", self.q_dims)
-        self.kv_tile_size = load_tiling_config("configs/tiling.json", "AttentionKV", self.kv_dims)
+        self.q_tile_size = q_tile_size
+        self.kv_tile_size = kv_tile_size
         self.prec = prec
 
         self.graph_op = graph.get_op(node_id, uid)
@@ -104,6 +109,8 @@ class MLALayer:
         _, _, D_pe = pe_dims
         Tb, Ts_kv, Td = self.kv_tile_size
         
+        self.split_kv = S_kv > Ts_kv
+
         self.q_tensor = Tensor(
             uid=self.graph_op["inputs"][0],
             dims=[B, S_q, H, D+D_pe],
@@ -115,16 +122,17 @@ class MLALayer:
             dims=[B, S_kv, D+D_pe],
             prec=self.prec,
         )
-        
+
         # store partial results between QKV and epilogue
         self.qkv_out_tensors = []
-        for s, pS in enumerate(range(0, S_kv, Ts_kv)):
-            qkv_out_tensor = Tensor(
-                    uid=self.uid + "_qkv_out_{}".format(s),
-                    dims=[B, 1, H, D],
-                    prec=self.prec,
-                )
-            self.qkv_out_tensors.append(qkv_out_tensor)
+        if self.split_kv:
+            for s, pS in enumerate(range(0, S_kv, Ts_kv)):
+                qkv_out_tensor = Tensor(
+                        uid=self.uid + "_qkv_out_{}".format(s),
+                        dims=[B, 1, H, D],
+                        prec=self.prec,
+                    )
+                self.qkv_out_tensors.append(qkv_out_tensor)
 
         # outputs after epilogue
         self.reduce_out_tensor = Tensor(
@@ -140,6 +148,9 @@ class MLALayer:
 
         self.tile_ops = {} 
         self.reduce_ops = {}
+
+        core_ids = [self.wafer.get_core(self.node_id, i).core_id for i in range(self.wafer.num_cores_per_node)]
+        self.stats = Stats(core_ids)
 
         self.create_tiles()
         self.create_ops()
@@ -172,10 +183,11 @@ class MLALayer:
 
                 self.q_tiles[b][h] = self.q_tensor.slice([(b*Tb, b*Tb + tiled_B), (0, 1), (h*Th, h*Th + tiled_H), (0, D+D_pe)])
                 
-                self.qkv_out_tiles[b][h] = {}
-                for s, pS in enumerate(range(0, S_kv, Ts_kv)):    
-                    self.qkv_out_tiles[b][h][s] = self.qkv_out_tensors[s].slice([(b*Tb, b*Tb + tiled_B), (0, 1), (h*Th, h*Th + tiled_H), (0, D)])
-                
+                if self.split_kv:
+                    self.qkv_out_tiles[b][h] = {}
+                    for s, pS in enumerate(range(0, S_kv, Ts_kv)):    
+                        self.qkv_out_tiles[b][h][s] = self.qkv_out_tensors[s].slice([(b*Tb, b*Tb + tiled_B), (0, 1), (h*Th, h*Th + tiled_H), (0, D)])
+                    
                 self.reduce_out_tiles[b][h] = self.reduce_out_tensor.slice([(b*Tb, b*Tb + tiled_B), (0, 1), (h*Th, h*Th + tiled_H), (0, D)])
 
         for b, pB in enumerate(range(0, B, Tb)):
@@ -187,19 +199,28 @@ class MLALayer:
                 self.kv_tiles[b][s] = self.kv_tensor.slice([(b*Tb, b*Tb + tiled_B), (s*Ts_kv, s*Ts_kv + tiled_S), (0, D+D_pe)])
     
     def create_ops(self):
+        _, S_kv, _ = self.kv_dims
+        _, Ts_kv, _ = self.kv_tile_size
+
         for b in self.q_tiles:
             self.tile_ops[b] = {}
             for h in self.q_tiles[b]:
                 self.tile_ops[b][h] = {}
                 for s in self.kv_tiles[b]:
-                    self.tile_ops[b][h][s] = TileAttnOp("{}_attn_{}_{}_{}".format(self.uid,b,h,s), self.q_tiles[b][h], self.kv_tiles[b][s], self.qkv_out_tiles[b][h][s])
+                    if self.split_kv:
+                        out_tile = self.qkv_out_tiles[b][h][s]  
+                    else:
+                        assert s == 0, "When not using split-K, there should be only one KV tile."
+                        out_tile = self.reduce_out_tiles[b][h]
+                    self.tile_ops[b][h][s] = TileAttnOp("{}_attn_{}_{}_{}".format(self.uid,b,h,s), self.q_tiles[b][h], self.kv_tiles[b][s], out_tile)
 
-        for b in self.q_tiles:
-            self.reduce_ops[b] = {}
-            for h in self.q_tiles[b]:
-                self.reduce_ops[b][h] = TileReduceOp("{}_attn_reduce_{}_{}".format(self.uid,b,h), 
-                                                    [self.tile_ops[b][h][s].out_tile for s in self.tile_ops[b][h]], 
-                                                    self.reduce_out_tiles[b][h])
+        if self.split_kv:
+            for b in self.q_tiles:
+                self.reduce_ops[b] = {}
+                for h in self.q_tiles[b]:
+                    self.reduce_ops[b][h] = TileReduceOp("{}_attn_reduce_{}_{}".format(self.uid,b,h), 
+                                                        [self.tile_ops[b][h][s].out_tile for s in self.tile_ops[b][h]], 
+                                                        self.reduce_out_tiles[b][h])
 
     def map_ops(self):
         for b in self.tile_ops:
@@ -210,11 +231,97 @@ class MLALayer:
                     core_id = list(mem_sizes.keys())[0].local_id
 
                     self.tile_ops[b][h][s].map_to_core(self.wafer.get_core(self.node_id, core_id))
-                    
-        for b in self.tile_ops:
-            for h in self.tile_ops[b]:
+                    self.stats.merge(self.tile_ops[b][h][s].stats)
+
+        for b in self.reduce_ops:
+            for h in self.reduce_ops[b]:
                 mem_sizes = self.reduce_ops[b][h].out_tile.get_physical_address()
                 assert len(mem_sizes) == 1, "Out tile is mapped to multiple memory banks."
                 core_id = list(mem_sizes.keys())[0].local_id
 
                 self.reduce_ops[b][h].map_to_core(self.wafer.get_core(self.node_id, core_id))
+                self.stats.merge(self.reduce_ops[b][h].stats)
+
+    def calc_expected(self):
+        B, S_q, H, D = self.q_dims
+        B, S_kv, D = self.kv_dims
+        B, S_kv, D_pe = self.pe_dims
+
+        expected = {
+            "q_size": B * S_q * H * (D+D_pe) * dtype_to_byte(self.prec),
+            "kv_size": B * S_kv * (D+D_pe) * dtype_to_byte(self.prec),
+            "output_size": B * S_q * H * D * dtype_to_byte(self.prec),
+            "flops": 
+                2 * B * S_q * H * S_kv * D # Q x KV
+                + 2 * B * S_q * H * S_kv * D_pe # Q x PE
+                + 2 * B * S_q * H * S_kv * D, # A x KV
+        }
+        expected["reads"] = expected["q_size"] + expected["kv_size"]
+        expected["writes"] = expected["output_size"]
+        return expected
+    
+    def print_stats(self):
+        expected = self.calc_expected()
+        self.stats.print_stats(self.uid, expected, dims=[list(self.q_dims), list(self.kv_dims)], tile_size=[self.q_tile_size, self.kv_tile_size])
+
+if __name__=="__main__":
+    from core_level.common.wafer import Wafer
+    from core_level.common.tensor import reset_tensor_registry
+    from core_level.common.graph import Graph
+
+    reset_tensor_registry()
+
+    node_grid = (1, 1)
+    core_grid = (4, 4)
+
+    wafer = Wafer(node_grid, core_grid)
+
+    ops = {}
+    for node_id in range(wafer.num_nodes):
+        ops[node_id] = {}
+        op_id = f"{node_id}:mla_0"
+        ops[node_id][op_id] = {
+            "type": "MLAAbsorbAttention",
+            "inputs": [f"{node_id}:mla_0_q"],
+            "outputs": [f"{node_id}:output_tensor"]
+        }
+
+    bsz = 2
+    seqlen_q = 1
+    seqlen_kv = 8
+    num_heads = 4
+    kv_lora_rank = 16
+    qk_rope_head_dim = 16
+    
+    q_tile_size = [2, 1, 4, 16]
+    kv_tile_size = [2, 8, 16]
+
+    q_dims = bsz, seqlen_q, num_heads, kv_lora_rank
+    kv_dims = bsz, seqlen_kv, kv_lora_rank
+    pe_dims = bsz, seqlen_kv, qk_rope_head_dim
+
+    q_tensor = Tensor(
+        uid=f"{node_id}:mla_0_q",
+        dims=[bsz, seqlen_q, num_heads, kv_lora_rank+qk_rope_head_dim],
+        prec="fp16",
+    )
+    
+    kv_tensor = Tensor(
+        uid=f"{node_id}:mla_0_kv",
+        dims=[bsz, seqlen_kv, kv_lora_rank+qk_rope_head_dim],
+        prec="fp16",
+    )
+
+    graph = Graph(iter=0, num_nodes=wafer.num_nodes, ops=ops)
+
+    for node_id in range(wafer.num_nodes):
+        layer = MLALayer(f"{node_id}:mla_0", node_id, graph, q_dims, kv_dims, pe_dims, q_tile_size, kv_tile_size, wafer, prec="fp16")
+        layer.print_stats()
+
+    traces = wafer.get_traces()
+    for node_id in traces:
+        for core_id in range(wafer.num_cores_per_node):
+            print(core_id)
+            for trace in traces[node_id][core_id]:
+                parsed_instr = InstructionSet.parse(trace)
+                print(parsed_instr)

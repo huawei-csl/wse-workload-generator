@@ -20,14 +20,46 @@ class Tile:
     def get_physical_address(self):
         return self.parent.get_physical_address(self.indices)
 
-def load_tiling_config(filepath: str, layer_type: str, dims: List[int]) -> List[int]:
+def load_tiling_config(filepath: str, layer_type: str, dims: List[int], uid: str = None) -> List[int]:
+    def _fill_missing(tile_size, dims):
+        for d in range(len(tile_size)):
+            # If tile size is None, use the full dimension size
+            if tile_size[d] is None:
+                tile_size[d] = dims[d]
+        return tile_size
+    
+    def _compare_with_wildcard(str1, str2):
+        assert "*" not in str1, "Wildcard '*' is only supported in the second string."
+        assert str2.count("*") <= 1, "Only one wildcard '*' is supported in the second string."
+
+        parts = str2.split("*")
+        return str1.startswith(parts[0]) and str1.endswith(parts[1])
+
+    '''
+    Return the matching key from uids that matches the given key. Supports wildcard '*'.
+    '''
+    def _key_match(key, uids):
+        if key in uids:
+            return key
+        for uid in uids:
+            if _compare_with_wildcard(key, uid):
+                return uid
+        return None
+
     with open(filepath, "r") as f:
         tilings = json.load(f)
-    tile_size = tilings[layer_type]
+
+    if uid:
+        matched_key = _key_match(uid, list(tilings["layers"].keys()))
+        if matched_key:
+            tile_size = tilings["layers"][matched_key]
+            assert len(tile_size) == len(dims), "Tiling dimensions do not match GEMM dimensions."
+            tile_size = _fill_missing(tile_size, dims)
+            return tile_size
+    
+    tile_size = tilings["defaults"][layer_type]
     assert len(tile_size) == len(dims), "Tiling dimensions do not match GEMM dimensions."
-    for d in range(len(tile_size)):
-        # If tile size is None, use the full dimension size
-        if tile_size[d] is None:
-            tile_size[d] = dims[d]
+    tile_size = _fill_missing(tile_size, dims)
+
     return tile_size
     

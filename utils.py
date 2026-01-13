@@ -23,6 +23,16 @@ def byte_to_str(byte):
     else:
         return "{:.2f} B".format(byte)
 
+def flops_to_str(flops):
+    if flops >= 1024*1024*1024:
+        return "{:.2f} GFLOP".format(flops/(1024*1024*1024))
+    elif flops >= 1024*1024:
+        return "{:.2f} MFLOP".format(flops/(1024*1024))
+    elif flops >= 1024:
+        return "{:.2f} kFLOP".format(flops/1024)
+    else:
+        return "{:.2f} FLOP".format(flops)
+
 def mac_to_str(macs):
     if macs >= 1024*1024*1024:
         return "{:.2f} GMAC".format(macs/(1024*1024*1024))

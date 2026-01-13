@@ -1,3 +1,4 @@
+import logging 
 
 from typing import Optional, List
 
@@ -28,6 +29,8 @@ class InstructionSet:
     '''
     @classmethod
     def READ(cls, bank_id: int, size: int, comment: Optional[str] = None) -> str:
+        logging.debug("Read {} bytes from bank {}".format(size, bank_id))
+
         if comment is None:
             comment = ""
         return "READ {} {}\t\t;{}".format(bank_id, size, comment)\
@@ -43,6 +46,8 @@ class InstructionSet:
     '''
     @classmethod
     def WRITE(cls, bank_id: int, size: int, comment: Optional[str] = None) -> str:
+        logging.debug("Write {} bytes to bank {}".format(size, bank_id))
+
         if comment is None:
             comment = ""
         return "WRITE {} {}\t\t;{}".format(bank_id, size, comment)
@@ -57,6 +62,8 @@ class InstructionSet:
     '''
     @classmethod
     def GEMM(cls, dims: List[int], comment: Optional[str] = None) -> str:
+        logging.debug("Perform GEMM with dims {}".format(dims))
+
         assert len(dims) == 3, "GEMM instruction requires 3 dimensions."
         if comment is None:
             comment = ""
@@ -72,6 +79,8 @@ class InstructionSet:
     '''
     @classmethod
     def ADD(cls, dims: List[int], comment: Optional[str] = None) -> str:
+        logging.debug("Perform ADD with dims {}".format(dims))
+
         assert len(dims) >= 1, "ADD instruction requires at least 1 dimension."
         if comment is None:
             comment = ""
@@ -89,6 +98,8 @@ class InstructionSet:
     '''
     @classmethod
     def COPY(cls, src_bank_id: int, dst_bank_id: int, size: int, comment: Optional[str] = None) -> str:
+        logging.debug("Copy {} bytes from {} to {}".format(size, src_bank_id, dst_bank_id))
+
         if comment is None:
             comment = ""
         return "COPY {} {} {}\t\t;{}".format(src_bank_id, dst_bank_id, size, comment)

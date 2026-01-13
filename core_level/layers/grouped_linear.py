@@ -8,6 +8,8 @@ from core_level.common.tile import load_tiling_config
 from core_level.common.wafer import Core
 from core_level.layers.reduce import TileReduceOp
 from core_level.common.isa import InstructionSet
+from core_level.common.stats import Stats
+from utils import dtype_to_byte
 
 class TileGroupGemmOp:
     def __init__(self, id, input_tile, weight_tile, out_tile) -> None:
@@ -16,6 +18,7 @@ class TileGroupGemmOp:
         self.weight_tile = weight_tile
         self.out_tile = out_tile
         self.mapped_core = None
+        self.stats = Stats()
 
         assert self.input_tile.dims[0] == self.weight_tile.dims[0], "Batch size mismatch in TileGroupGemmOp {}.".format(self.id)
         logging.debug("TileGroupGemmOp {} is created with input tile {}, weight tile {}, out tile {}.".format(self.id, self.input_tile.id, self.weight_tile.id, self.out_tile.id))
@@ -25,7 +28,7 @@ class TileGroupGemmOp:
         self.mapped_core = core
         core.add_instruction(self)
         logging.debug("TileGroupGemmOp {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
-
+    
     def get_traces(self) -> List[str]:
         B, M, K = self.input_tile.dims
         _, _, N = self.weight_tile.dims
@@ -35,25 +38,29 @@ class TileGroupGemmOp:
         # Read input tile from memory
         mem_sizes = self.input_tile.get_physical_address()
         for bank, size in mem_sizes.items():
-            # traces.append("READ {} {} {}".format(self.input_tile.id, bank.bank_id, size))
             traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+            self.stats.add_reads(size)
+            # stats["reads"] += size
 
         # Read weight tile from memory
         mem_sizes = self.weight_tile.get_physical_address()
         for bank, size in mem_sizes.items():
-            # traces.append("READ {} {} {}".format(self.weight_tile.id, bank.bank_id, size))
             traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+            self.stats.add_reads(size)
+            # stats["reads"] += size
 
         for b in range(B):
-            # traces.append(f"GEMM {self.input_tile.id}[{b}] {self.weight_tile.id}[{b}] {self.out_tile.id}[{b}] {M}x{K}x{N}")
             traces.append(InstructionSet.GEMM([M, K, N], self.id))
+            self.stats.add_cube(self.mapped_core.core_id, 2 * M * K * N)
+            # stats["flops"] += 2 * M * K * N
 
         # Write output tile back to memory
         mem_sizes = self.out_tile.get_physical_address()
         for bank, size in mem_sizes.items():
-            # traces.append("WRITE {} {} {}".format(self.out_tile.id, bank.bank_id, size))
             traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id))
-        
+            self.stats.add_writes(size)
+            # stats["writes"] += size
+
         return traces
 
 
@@ -88,21 +95,18 @@ class GroupedLinearLayer:
             prec=self.prec,
         )
         
-
         self.weight_tensor = Tensor(
             uid=self.uid + "_weight",
             dims=[B, K, N],
             prec=self.prec,
         )
         
-
         self.output_tensor = Tensor(
             uid=self.graph_op["outputs"][0],
             dims=[B, M, N],
             prec=self.prec,
         )
         
-
         self.input_tiles = {}
         self.weight_tiles = {}
         self.partial_sum_tiles = {}
@@ -110,6 +114,9 @@ class GroupedLinearLayer:
         self.tile_ops = {} 
         self.reduce_ops = {}
         
+        core_ids = [self.wafer.get_core(self.node_id, i).core_id for i in range(self.wafer.num_cores_per_node)]
+        self.stats = Stats(core_ids)
+
         self.create_tiles()
         self.create_ops()
 
@@ -224,7 +231,8 @@ class GroupedLinearLayer:
                         core_id = list(mem_sizes.keys())[0].local_id
 
                         self.tile_ops[b][m][k][n].map_to_core(self.wafer.get_core(self.node_id, core_id))
-        
+                        self.stats.merge(self.tile_ops[b][m][k][n].stats)
+
         for b in self.reduce_ops:
             for m in self.reduce_ops[b]:
                 for n in self.reduce_ops[b][m]:
@@ -234,3 +242,21 @@ class GroupedLinearLayer:
                     core_id = list(mem_sizes.keys())[0].local_id
 
                     self.reduce_ops[b][m][n].map_to_core(self.wafer.get_core(self.node_id, core_id))
+                    self.stats.merge(self.reduce_ops[b][m][n].stats)
+
+    def calc_expected(self):
+        B, M, K, N = self.dims
+        expected = {
+            "input0_size": B * M * K * dtype_to_byte(self.prec),
+            "input1_size": B * K * N * dtype_to_byte(self.prec),
+            "output_size": B * M * N * dtype_to_byte(self.prec),
+            "flops": 2 * B * M * K * N
+        }
+        expected["reads"] = expected["input0_size"] + expected["input1_size"]
+        expected["writes"] = expected["output_size"]
+        return expected
+    
+
+    def print_stats(self):
+        expected = self.calc_expected()
+        self.stats.print_stats(self.uid, expected=expected, dims=self.dims, tile_size=self.tile_size)

@@ -1,11 +1,14 @@
 import logging
 from typing import List
 
+from utils import dtype_to_byte
+
 from core_level.common.wafer import Core
 from core_level.layers.reduce import TileReduceOp
 
 from core_level.common.tensor import Tensor
 from core_level.common.isa import InstructionSet
+from core_level.common.stats import Stats
 
 class TileGemmOp:
     def __init__(self, id, input_tile, weight_tile, out_tile) -> None:
@@ -17,6 +20,7 @@ class TileGemmOp:
         assert self.input_tile.dims[1] == self.weight_tile.dims[0], "TileGemmOp {} has incompatible input tile {} and weight tile {}.".format(self.id, self.input_tile.id, self.weight_tile.id)
 
         self.mapped_core = None
+        self.stats = Stats()
         logging.debug("TileGemmOp {} is created with input tile {}, weight tile {}, out tile {}.".format(self.id, self.input_tile.id, self.weight_tile.id, self.out_tile.id))
 
     def map_to_core(self, core: Core):
@@ -24,7 +28,7 @@ class TileGemmOp:
         self.mapped_core = core
         core.add_instruction(self)
         logging.debug("TileGemmOp {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
-
+    
     def get_traces(self) -> List[str]:
         M, K = self.input_tile.dims
         _, N = self.weight_tile.dims
@@ -35,19 +39,24 @@ class TileGemmOp:
         mem_sizes = self.input_tile.get_physical_address()
         for bank, size in mem_sizes.items():
             traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+            self.stats.add_reads(size)
 
         # Read weight tile from memory
         mem_sizes = self.weight_tile.get_physical_address()
         for bank, size in mem_sizes.items():
             traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+            self.stats.add_reads(size)
 
+        # Perform GEMM operation
         traces.append(InstructionSet.GEMM([M, K, N], self.id))
+        self.stats.add_cube(self.mapped_core.core_id, 2 * M * K * N)
 
         # Write output tile back to memory
         mem_sizes = self.out_tile.get_physical_address()
         for bank, size in mem_sizes.items():
             traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id))
-        
+            self.stats.add_writes(size)
+
         return traces
 
 class LinearLayer:
@@ -99,6 +108,9 @@ class LinearLayer:
         self.out_tiles = {} 
         self.tile_ops = {} 
         self.reduce_ops = {}
+
+        core_ids = [self.wafer.get_core(self.node_id, i).core_id for i in range(self.wafer.num_cores_per_node)]
+        self.stats = Stats(core_ids)
 
         self.create_tiles()
         self.create_ops()
@@ -194,6 +206,7 @@ class LinearLayer:
                     core_id = list(mem_sizes.keys())[0].local_id
 
                     self.tile_ops[m][k][n].map_to_core(self.wafer.get_core(self.node_id, core_id))
+                    self.stats.merge(self.tile_ops[m][k][n].stats)
 
         for m in self.reduce_ops:
             for n in self.reduce_ops[m]:
@@ -203,6 +216,23 @@ class LinearLayer:
                 core_id = list(mem_sizes.keys())[0].local_id
 
                 self.reduce_ops[m][n].map_to_core(self.wafer.get_core(self.node_id, core_id))
+                self.stats.merge(self.reduce_ops[m][n].stats)
+
+    def calc_expected(self):
+        M, K, N = self.dims
+        expected = {
+            "input0_size": M * K * dtype_to_byte(self.prec),
+            "input1_size": K * N * dtype_to_byte(self.prec),
+            "output_size": M * N * dtype_to_byte(self.prec),
+            "flops": 2 * M * K * N
+        }
+        expected["reads"] = expected["input0_size"] + expected["input1_size"]
+        expected["writes"] = expected["output_size"]
+        return expected
+    
+    def print_stats(self):
+        expected = self.calc_expected()
+        self.stats.print_stats(self.uid, expected, dims=self.dims, tile_size=self.tile_size)
 
 if __name__=="__main__":
     from core_level.common.wafer import Wafer
@@ -233,18 +263,10 @@ if __name__=="__main__":
 
     input_tensor = Tensor(
         uid="0:input_tensor",
-        dims=[dims[1], dims[0]],
+        dims=[dims[0], dims[1]],
         prec="fp16",
     )
 
     for node_id in range(wafer.num_nodes):
         layer = LinearLayer(f"{node_id}:linear_0", node_id, graph, dims, tile_size, wafer, prec="fp16")
-
-    traces = wafer.get_traces()
-    for node_id in traces:
-        for core_id in range(wafer.num_cores_per_node):
-            print(core_id)
-            for trace in traces[node_id][core_id]:
-                parsed_instr = InstructionSet.parse(trace)
-                print(parsed_instr)
-
+        layer.print_stats()

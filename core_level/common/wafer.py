@@ -22,18 +22,13 @@ class Core:
 
     def add_instruction(self, tile_op: "TileGemmOp"):
         self.instruction_queue.append(tile_op)
-        self.traces += tile_op.get_traces()
+        traces = tile_op.get_traces()
+        self.traces += traces
         logging.debug("TileGemmOp {} is added to core {} instruction queue.".format(tile_op.id, self.core_id))
-
+    
     def get_traces(self):
         return self.traces
 
-    # def generate_traces(self):
-        
-    #     for op in self.instruction_queue:
-    #         traces += op.get_traces()
-    #     return traces
-    
 class MemoryBank:
     def __init__(self, node_id: int, local_id: int, num_banks_per_node: int) -> None:
         self.node_id = node_id

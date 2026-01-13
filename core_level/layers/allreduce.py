@@ -5,6 +5,8 @@ from typing import List
 
 from core_level.common.tensor import Tensor
 from core_level.common.isa import InstructionSet
+from core_level.common.stats import Stats
+from utils import byte_to_str
 
 class TileAllreduceStage1Op:
     def __init__(self, id, send0_tile, send1_tile, recv_tile, next_tile) -> None:
@@ -14,6 +16,7 @@ class TileAllreduceStage1Op:
         self.recv_tile = recv_tile
         self.next_tile = next_tile
         self.mapped_core = None
+        self.stats = Stats()
         logging.debug("TileAllreduceStage1Op {} is created.".format(self.id))
 
     def map_to_core(self, core: "Core"):
@@ -21,7 +24,7 @@ class TileAllreduceStage1Op:
         self.mapped_core = core
         core.add_instruction(self)
         logging.debug("TileAllreduceStage1Op {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
-
+    
     def get_traces(self) -> List[str]:
         traces = []
 
@@ -37,30 +40,37 @@ class TileAllreduceStage1Op:
 
             assert send0_size == next_size, "Mismatched send0 and next tile sizes in TileAllreduceStage1Op {}.".format(self.id)
             
-            # traces.append("COPY {} {} {} {} {}".format(self.send0_tile.id, send0_bank.bank_id, self.next_tile.id, next_bank.bank_id, send0_size))
             traces.append(InstructionSet.COPY(send0_bank.bank_id, next_bank.bank_id, send0_size, self.id))
+            self.stats.add_reads(send0_size)
+            self.stats.add_writes(send0_size)
+            # stats["reads"] += send0_size
+            # stats["writes"] += send0_size
 
         # Read send1_tile from memory
         mem_sizes = self.send1_tile.get_physical_address()
         for bank, size in mem_sizes.items():
-            # traces.append("READ {} {} {}".format(self.send1_tile.id, bank.bank_id, size))
             traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+            self.stats.add_reads(size)
+            # stats["reads"] += size
 
         # Read send1_tile from memory
         mem_sizes = self.recv_tile.get_physical_address()
         for bank, size in mem_sizes.items():
-            # traces.append("READ {} {} {}".format(self.recv_tile.id, bank.bank_id, size))
             traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+            self.stats.add_reads(size)
+            # stats["reads"] += size
 
         # Element-wise addition: send1_tile += recv_tile
-        # traces.append("ADD {} {} {} {}".format(self.send1_tile.id, self.recv_tile.id, self.send1_tile.id, "x".join([str(d) for d in self.send1_tile.dims])))
         traces.append(InstructionSet.ADD(self.send1_tile.dims, self.id))
+        self.stats.add_vector(self.mapped_core.core_id, eval("*".join(map(str, self.send1_tile.dims))))
+        # stats["flops"] += eval("*".join(map(str, self.send1_tile.dims)) )
 
         # Write output tile back to memory
         mem_sizes = self.send1_tile.get_physical_address()
         for bank, size in mem_sizes.items():
-            # traces.append("WRITE {} {} {}".format(self.send1_tile.id, bank.bank_id, size))
             traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id))
+            self.stats.add_writes(size)
+            # stats["writes"] += size
 
         return traces
 
@@ -71,6 +81,7 @@ class TileAllreduceStage2Op:
         self.send_tile = send_tile
         self.next_tile = next_tile
         self.mapped_core = None
+        self.stats = Stats()
         logging.debug("TileAllreduceStage2Op {} is created.".format(self.id))
 
     def map_to_core(self, core: "Core"):
@@ -78,7 +89,7 @@ class TileAllreduceStage2Op:
         self.mapped_core = core
         core.add_instruction(self)
         logging.debug("TileAllreduceStage2Op {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
-
+    
     def get_traces(self) -> List[str]:
         traces = []
 
@@ -94,11 +105,14 @@ class TileAllreduceStage2Op:
 
             assert send_size == next_size, "Mismatched send0 and next tile sizes in TileAllreduceStage1Op {}.".format(self.id)
             
-            # traces.append("COPY {} {} {} {} {}".format(self.send_tile.id, send_bank.bank_id, self.next_tile.id, next_bank.bank_id, send_size))
             traces.append(InstructionSet.COPY(send_bank.bank_id, next_bank.bank_id, send_size, self.id))
+            self.stats.add_reads(send_size)
+            self.stats.add_writes(send_size)
+            # stats["reads"] += send_size
+            # stats["writes"] += send_size
 
         return traces
-    
+        
 class AllreduceLayer:
     def __init__(self, uid, node_id, comm_group, graph, dims, wafer, prec) -> None:
         self.uid = uid
@@ -130,6 +144,8 @@ class AllreduceLayer:
         self.recv_tiles = {}
         self.next_tiles = {}
         self.tile_ops = {}
+
+        self.stats = Stats()
 
         self.create_tiles()
         self.create_ops()
@@ -213,9 +229,14 @@ class AllreduceLayer:
             # assert len(mem_sizes) == 1, "AllreduceLayer currently only supports mapping 2D tiles to a single core."
             local_bank_id = list(mem_sizes.keys())[0].local_id
             self.tile_ops[i].map_to_core(self.wafer.get_core(self.node_id, local_bank_id))
+            self.stats.merge(self.tile_ops[i].stats)
 
         for i in range(num_rounds):
             mem_sizes = self.tile_ops[num_rounds+i].send_tile.get_physical_address()
             # assert len(mem_sizes) == 1, "AllreduceLayer currently only supports mapping 2D tiles to a single core."
             local_bank_id = list(mem_sizes.keys())[0].local_id
             self.tile_ops[num_rounds+i].map_to_core(self.wafer.get_core(self.node_id, local_bank_id))
+            self.stats.merge(self.tile_ops[num_rounds+i].stats)
+
+    def print_stats(self):
+        self.stats.print_stats(self.uid)
