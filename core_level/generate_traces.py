@@ -14,6 +14,7 @@ from core_level.layers.view import View
 from core_level.layers.split import Split
 from core_level.layers.transpose import Transpose
 from core_level.layers.concat import Concat
+from core_level.layers.slice import Slice
 
 from core_level.common.graph import init_graph
 from core_level.common.tile import load_tiling_config
@@ -188,11 +189,23 @@ def generate_traces(args):
 
                 layer = Concat(layer_uid, node_id, axis, input_dims, graph, prec)
 
+            elif row["operation"] == "Slice":
+                layer_uid = row["uid"]
+
+                input_dims = list(map(int, row["Dimensions"].split(" -> ")[0][1:-1].split(", ")))
+                axis = int(row["Dimensions"].split(" -> ")[1])
+                rng_start, rng_end = map(int, row["Dimensions"].split(" -> ")[2].split(":"))
+                index_rng = (rng_start, rng_end)
+
+                layer = Slice(layer_uid, node_id, axis, index_rng, input_dims, graph, prec)
+
             else:
+                layer = None
                 # raise NotImplementedError
                 logging.warning("Operation {} not recognized.".format(row["operation"]))
 
-            layer.log_stats()
+            if layer:
+                layer.log_stats()
 
     wafer.export_traces(args.iter, "traces/decode")
 

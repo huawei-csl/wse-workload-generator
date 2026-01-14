@@ -131,19 +131,28 @@ class Split:
 class Slice:
     def __init__(self, input_tensor, indices, axis, uid=None) -> None:
         def convert_to_range(indices):
+            '''
+            Converts a list of indices to a range (start, end) if they form a valid range with consistent step size.
+            '''
             if len(indices) == 1:
                 return (indices[0], indices[0]+1)
             step = indices[1] - indices[0]
             for i in range(2, len(indices)):
                 if indices[i] - indices[i-1] != step:
                     return None
+            assert step == 1, "Only support step size of 1 for now"
             return (indices[0], indices[-1]+1)
 
         assert len(indices) > 0, "Indices list cannot be empty"
-        assert axis >= 0 and axis < len(input_tensor.dims), "Axis out of bounds"
+        assert -len(input_tensor.dims) < axis < len(input_tensor.dims), "Axis out of bounds"
+        if axis < 0:
+            axis += len(input_tensor.dims)
+        
+        self.axis = axis
 
         index_rng = convert_to_range(indices)
         assert index_rng is not None, "Indices must form a valid range with consistent step size"
+        self.index_rng = index_rng
 
         self.input_tensor = input_tensor
 
@@ -161,7 +170,7 @@ class Slice:
         self.output_tensor = Tensor(self.uid, input_tensor.node_id, list(self.new_dims))
 
     def forward(self, stats):
-        stats.append(self.uid, "Slice", 0, 0, 0, 0, comm_group=None, dims=self.new_dims)
+        stats.append(self.uid, "Slice", 0, 0, 0, 0, comm_group=None, dims=f"{self.input_tensor.dims} -> {self.axis} -> {self.index_rng[0]}:{self.index_rng[1]}")
         get_compute_graph().add_node(self, [self.input_tensor], [self.output_tensor], attrs=None)        
         return self.output_tensor
     
