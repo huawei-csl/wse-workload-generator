@@ -1,6 +1,14 @@
 {
-    "Linear": [16, null, 16],
-    "GroupedLinear": [1, 16, null, 16],
-    "AttentionQ": [1, 1, null, null],
-    "AttentionKV": [1, 128, null]
+    "layers": {
+        "decode*_attn_absorb_wkva": [16, 1024, 64],
+        "decode*_attn_absorb_wqa": [16, 1024, 64],
+        "decode*_attn_absorb_wqb":  [16, 1536, 64],
+        "decode*_attn_absorb_wo": [16, 1024, 128]
+    },
+    "defaults": {
+        "Linear": [16, 1024, 64],
+        "GroupedLinear": [1, 16, 128, 64],
+        "AttentionQ": [1, 1, null, null],
+        "AttentionKV": [1, 512, null]
+    }
 }

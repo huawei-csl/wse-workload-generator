@@ -67,6 +67,14 @@ class Wafer:
     def get_core(self, node_id: int, local_id: int) -> Core:
         return self.cores[node_id][local_id]
     
+    def get_core_by_global_id(self, global_id: int) -> Core:
+        node_id = global_id // self.num_cores_per_node
+        local_id = global_id % self.num_cores_per_node
+        return self.cores[node_id][local_id]
+
+    def local_id_to_global(self, node_id: int, local_id: int) -> int:
+        return node_id * self.num_cores_per_node + local_id
+
     def get_traces(self):
         traces = {}
         for node_id in range(self.num_nodes):

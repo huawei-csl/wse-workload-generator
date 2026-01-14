@@ -490,8 +490,8 @@ class Tensor:
 
     def clone(self, new_uid):
         new_tensor = Tensor(new_uid, list(self.dims), self.prec)
-        new_tensor.tile_size = list(self.tile_size)
-        new_tensor.memory_map = dict(self.memory_map)
+        new_tensor.tile_size = list(self.tile_size) if self.tile_size else None
+        new_tensor.memory_map = dict(self.memory_map) if self.memory_map else None
         return new_tensor
 
 if __name__=="__main__":

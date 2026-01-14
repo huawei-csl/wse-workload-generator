@@ -29,22 +29,21 @@ class TileReduceOp:
         traces = []
 
         # Read input tiles from memory
-        for tile in self.in_tiles:
+        for i, tile in enumerate(self.in_tiles):
             mem_sizes = tile.get_physical_address()
             for bank, size in mem_sizes.items():
                 traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
                 self.stats.add_reads(size)
-                # stats["reads"] += size
 
-            traces.append(InstructionSet.ADD(self.out_tile.dims, self.id))
-            self.stats.add_vector(self.mapped_core.core_id, eval("*".join(map(str, self.out_tile.dims))))
+            if i > 0:
+                traces.append(InstructionSet.ADD(self.out_tile.dims, self.id))
+                self.stats.add_vector(self.mapped_core.core_id, eval("*".join(map(str, self.out_tile.dims))))
 
         # Write output tile back to memory
         mem_sizes = self.out_tile.get_physical_address()
         for bank, size in mem_sizes.items():
             traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id))
             self.stats.add_writes(size)
-            # stats["writes"] += size
 
         return traces
     

@@ -230,9 +230,9 @@ class LinearLayer:
         expected["writes"] = expected["output_size"]
         return expected
     
-    def print_stats(self):
+    def log_stats(self):
         expected = self.calc_expected()
-        self.stats.print_stats(self.uid, expected, dims=self.dims, tile_size=self.tile_size)
+        self.stats.log_stats(self.uid, self.__class__.__name__, self.node_id, expected=expected, dims=self.dims, tile_size=self.tile_size)
 
 if __name__=="__main__":
     from core_level.common.wafer import Wafer
@@ -269,4 +269,4 @@ if __name__=="__main__":
 
     for node_id in range(wafer.num_nodes):
         layer = LinearLayer(f"{node_id}:linear_0", node_id, graph, dims, tile_size, wafer, prec="fp16")
-        layer.print_stats()
+        layer.log_stats()

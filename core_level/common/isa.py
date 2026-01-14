@@ -7,7 +7,8 @@ class InstructionSet:
         "READ",
         "WRITE",
         "GEMM",
-        "ADD"
+        "ADD",
+        "BARRIER"
     ]
 
     '''
@@ -105,6 +106,22 @@ class InstructionSet:
         return "COPY {} {} {}\t\t;{}".format(src_bank_id, dst_bank_id, size, comment)
     
     '''
+    BARRIER instruction to synchronize multiple cores.
+    Args:
+        hash: Unique identifier for the barrier
+        comment: Optional comment for the instruction
+    Returns:
+        Formatted BARRIER instruction string
+    '''
+    @classmethod
+    def BARRIER(cls, hash, comment: Optional[str] = None) -> str:
+        logging.debug("Barrier with uid {}".format(hash))
+
+        if comment is None:
+            comment = ""
+        return "BARRIER {}\t\t;{}".format(hash, comment) 
+
+    '''
     Parse an instruction string into its components.
     ️Args:
     ️    instruction_str: Instruction string to parse
@@ -137,5 +154,8 @@ class InstructionSet:
             dst_bank_id = int(parts[2])
             size = int(parts[3])
             return ("COPY", src_bank_id, dst_bank_id, size, comment)
+        elif instr_type == "BARRIER":
+            core_ids = list(map(int, parts[1:]))
+            return ("BARRIER", core_ids, comment)
         else:
             raise ValueError("Unknown instruction type: {}".format(instr_type)) 

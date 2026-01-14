@@ -257,6 +257,6 @@ class GroupedLinearLayer:
         return expected
     
 
-    def print_stats(self):
+    def log_stats(self):
         expected = self.calc_expected()
-        self.stats.print_stats(self.uid, expected=expected, dims=self.dims, tile_size=self.tile_size)
+        self.stats.log_stats(self.uid, self.__class__.__name__, self.node_id, expected=expected, dims=self.dims, tile_size=self.tile_size)

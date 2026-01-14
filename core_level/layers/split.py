@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import List
 
 from core_level.common.tensor import Tensor
+from core_level.common.stats import Stats
 
 class Split:
     def __init__(self, uid, node_id, axis, split_dims, input_dims, graph, prec) -> None:
@@ -55,6 +56,7 @@ class Split:
         )
         self.output_tensor1.set_map(new_map1, self.input_tensor.tile_size, addr_offset=self.input_tensor.addr_offset)
 
+        self.stats = Stats()
 
     def _remap(self, input_map):
         def get_dict_val(dict, ind: List[int]):
@@ -114,6 +116,9 @@ class Split:
 
         return new_map0, new_map1
     
+    def log_stats(self):
+        self.stats.log_stats(self.uid, self.__class__.__name__, self.node_id, dims=self.input_dims, tile_size=self.input_tensor.tile_size)
+
 
 if __name__=="__main__":
     from core_level.common.wafer import Wafer

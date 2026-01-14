@@ -3,6 +3,7 @@ import itertools
 from typing import List
 
 from core_level.common.tensor import Tensor
+from core_level.common.stats import Stats
 
 class View:
     def __init__(self, uid, node_id, input_dims, output_dims, graph, prec) -> None:
@@ -59,6 +60,8 @@ class View:
             prec=self.prec,
         )
         self.output_tensor.set_map(new_map, new_tile_size, addr_offset=self.input_tensor.addr_offset)
+
+        self.stats = Stats()
 
     def _remap_merge(self, input_map, new_tile_size, first):
         def get_dict_val(dict, ind: List[int]):
@@ -168,7 +171,8 @@ class View:
 
         return new_map
 
-
+    def log_stats(self):
+        self.stats.log_stats(self.uid, self.__class__.__name__, self.node_id, dims=self.input_dims, tile_size=self.input_tensor.tile_size)
 
 if __name__ == "__main__":
     from core_level.common.wafer import Wafer

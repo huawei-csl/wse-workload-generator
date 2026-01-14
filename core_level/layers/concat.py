@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import List
 
 from core_level.common.tensor import Tensor
+from core_level.common.stats import Stats
 
 class Concat:
     def __init__(self, uid, node_id, axis, input_dims, graph, prec) -> None:
@@ -22,6 +23,7 @@ class Concat:
                 continue
             assert input_dims[0][d] == input_dims[1][d], "Concat operation {} on node {} has incompatible dimensions: input0_dims {} vs input1_dims {}.".format(uid, node_id, input_dims[0], input_dims[1])
 
+        self.input_dims = input_dims
         self.input0_dims = input0_dims
         self.input1_dims = input1_dims
         self.axis = axis
@@ -55,6 +57,8 @@ class Concat:
             prec=self.prec,
         )
         self.output_tensor.set_map(out_map, self.input_tensor0.tile_size)
+
+        self.stats = Stats()
 
     def _remap(self, input_map0, input_map1):
         def get_dict_val(dict, ind: List[int]):
@@ -111,7 +115,10 @@ class Concat:
             )
 
         return new_map
-    
+
+    def log_stats(self):
+        self.stats.log_stats(self.uid, self.__class__.__name__, self.node_id, dims=self.input_dims, tile_size=self.input_tensor0.tile_size)
+
 
 
 if __name__=="__main__":

@@ -43,6 +43,13 @@ def generate_traces(args):
 
     graph = init_graph(args.iter, wafer.num_nodes)
 
+    # clear logs
+    log_dir = "logs/core_level"
+    for fname in os.listdir(log_dir):
+        fpath = os.path.join(log_dir, fname)
+        if os.path.isfile(fpath):
+            os.remove(fpath)
+    
     for node_id in range(wafer.num_nodes):
         logging.info("Generating traces for node {}...".format(node_id))
 
@@ -75,7 +82,6 @@ def generate_traces(args):
                 tile_size = load_tiling_config("configs/tiling.json", "Linear", dims, layer_uid)
 
                 layer = LinearLayer(layer_uid, node_id, graph, dims, tile_size, wafer, prec)
-                layer.print_stats()
 
             elif row["operation"] == "GroupedLinear":
                 layer_uid = row["uid"]
@@ -89,7 +95,6 @@ def generate_traces(args):
 
                 dims = (B, M, K, N)
                 layer = GroupedLinearLayer(layer_uid, node_id, graph, dims, wafer, prec)
-                layer.print_stats()
 
             elif row["operation"] == "MLAAbsorbAttention":
                 layer_uid = row["uid"]
@@ -108,8 +113,7 @@ def generate_traces(args):
                 kv_tile_size = load_tiling_config("configs/tiling.json", "AttentionKV", kv_dims, layer_uid)
 
                 layer = MLALayer(layer_uid, node_id, graph, q_dims, kv_dims, pe_dims, q_tile_size, kv_tile_size, wafer, prec)
-                layer.print_stats()
-
+                
             elif row["operation"] == "Multicast":
                 layer_uid = row["uid"]
                 dims = row["Dimensions"][1:-1].split(",")
@@ -117,7 +121,7 @@ def generate_traces(args):
                 comm_group = row["comm. group"][1:-1].split(",")
                 dst_nodes = list(map(int, comm_group))
 
-                MulticastLayer(layer_uid, node_id, dst_nodes, graph, dims, wafer, prec)
+                layer = MulticastLayer(layer_uid, node_id, dst_nodes, graph, dims, wafer, prec)
 
             elif row["operation"] == "Unicast":
                 layer_uid = row["uid"]
@@ -126,14 +130,14 @@ def generate_traces(args):
                 dims = [int(dims[0]),]
                 dst_node = int(row["comm. group"])
 
-                UnicastLayer(layer_uid, node_id, dst_node, graph, dims, wafer, prec)
+                layer = UnicastLayer(layer_uid, node_id, dst_node, graph, dims, wafer, prec)
 
             elif row["operation"] == "AllReduce":
                 layer_uid = row["uid"]
                 dims = list(map(int, row["Dimensions"][1:-1].split(", ")))
                 comm_group = list(map(int, row["comm. group"][1:-1].split(",")))
 
-                AllreduceLayer(layer_uid, node_id, comm_group, graph, dims, wafer, prec)
+                layer = AllreduceLayer(layer_uid, node_id, comm_group, graph, dims, wafer, prec)
 
             elif row["operation"] == "AlltoAll":
                 layer_uid = row["uid"]
@@ -143,14 +147,14 @@ def generate_traces(args):
                 dst_nodes = list(map(int, comm_group))
 
                 # model all-to-all as multicast from each node to all nodes
-                MulticastLayer(layer_uid, node_id, dst_nodes, graph, dims, wafer, prec)
+                layer = MulticastLayer(layer_uid, node_id, dst_nodes, graph, dims, wafer, prec)
 
             elif row["operation"] == "View":
                 layer_uid = row["uid"]
                 input_dims = list(map(int, row["Dimensions"].split(" -> ")[0][1:-1].split(", ")))
                 output_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
 
-                View(layer_uid, node_id, input_dims, output_dims, graph, prec)
+                layer = View(layer_uid, node_id, input_dims, output_dims, graph, prec)
 
             elif row["operation"] == "Split":
                 layer_uid = row["uid"]
@@ -158,7 +162,7 @@ def generate_traces(args):
                 split_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
                 input_dims = list(map(int, row["Dimensions"].split(" -> ")[2][1:-1].split(", ")))
 
-                Split(layer_uid, node_id, axis, split_dims, input_dims, graph, prec)
+                layer = Split(layer_uid, node_id, axis, split_dims, input_dims, graph, prec)
 
             elif row["operation"] == "Transpose":
                 layer_uid = row["uid"]
@@ -167,7 +171,7 @@ def generate_traces(args):
                 input_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
                 output_dims = list(map(int, row["Dimensions"].split(" -> ")[2][1:-1].split(", ")))
 
-                Transpose(layer_uid, node_id, axes, input_dims, output_dims, graph, prec)
+                layer = Transpose(layer_uid, node_id, axes, input_dims, output_dims, graph, prec)
             
             elif row["operation"] == "Concat":
                 layer_uid = row["uid"]
@@ -176,11 +180,13 @@ def generate_traces(args):
                 input0_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
                 input1_dims = list(map(int, row["Dimensions"].split(" -> ")[2][1:-1].split(", ")))
 
-                Concat(layer_uid, node_id, axis, [input0_dims, input1_dims], graph, prec)
+                layer = Concat(layer_uid, node_id, axis, [input0_dims, input1_dims], graph, prec)
 
             else:
                 # raise NotImplementedError
                 logging.warning("Operation {} not recognized.".format(row["operation"]))
+
+            layer.log_stats()
 
     wafer.export_traces(args.iter, "traces/decode")
 

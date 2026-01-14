@@ -6,16 +6,18 @@ from typing import List
 from core_level.common.tensor import Tensor
 from core_level.common.isa import InstructionSet
 from core_level.common.stats import Stats
-from utils import byte_to_str
+from core_level.layers.barrier import Barrier
+from core_level.layers.reduce import TileReduceOp
+
+from utils import byte_to_str, dtype_to_byte
 
 class TileAllreduceStage1Op:
-    def __init__(self, id, send0_tile, send1_tile, recv_tile, next_tile) -> None:
+    def __init__(self, id, send0_tile, next_tile, comm_group) -> None:
         self.id = id
         self.send0_tile = send0_tile
-        self.send1_tile = send1_tile
-        self.recv_tile = recv_tile
         self.next_tile = next_tile
         self.mapped_core = None
+        self.comm_group = comm_group
         self.stats = Stats()
         logging.debug("TileAllreduceStage1Op {} is created.".format(self.id))
 
@@ -41,46 +43,18 @@ class TileAllreduceStage1Op:
             assert send0_size == next_size, "Mismatched send0 and next tile sizes in TileAllreduceStage1Op {}.".format(self.id)
             
             traces.append(InstructionSet.COPY(send0_bank.bank_id, next_bank.bank_id, send0_size, self.id))
-            self.stats.add_reads(send0_size)
-            self.stats.add_writes(send0_size)
-            # stats["reads"] += send0_size
-            # stats["writes"] += send0_size
-
-        # Read send1_tile from memory
-        mem_sizes = self.send1_tile.get_physical_address()
-        for bank, size in mem_sizes.items():
-            traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
-            self.stats.add_reads(size)
-            # stats["reads"] += size
-
-        # Read send1_tile from memory
-        mem_sizes = self.recv_tile.get_physical_address()
-        for bank, size in mem_sizes.items():
-            traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
-            self.stats.add_reads(size)
-            # stats["reads"] += size
-
-        # Element-wise addition: send1_tile += recv_tile
-        traces.append(InstructionSet.ADD(self.send1_tile.dims, self.id))
-        self.stats.add_vector(self.mapped_core.core_id, eval("*".join(map(str, self.send1_tile.dims))))
-        # stats["flops"] += eval("*".join(map(str, self.send1_tile.dims)) )
-
-        # Write output tile back to memory
-        mem_sizes = self.send1_tile.get_physical_address()
-        for bank, size in mem_sizes.items():
-            traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id))
-            self.stats.add_writes(size)
-            # stats["writes"] += size
+            self.stats.add_copy(send0_size)
 
         return traces
 
 
 class TileAllreduceStage2Op:
-    def __init__(self, id, send_tile, next_tile) -> None:
+    def __init__(self, id, send_tile, next_tile, comm_group) -> None:
         self.id = id
         self.send_tile = send_tile
         self.next_tile = next_tile
         self.mapped_core = None
+        self.comm_group = comm_group
         self.stats = Stats()
         logging.debug("TileAllreduceStage2Op {} is created.".format(self.id))
 
@@ -97,6 +71,7 @@ class TileAllreduceStage2Op:
         next_mem_sizes = self.next_tile.get_physical_address()
 
         assert len(send_mem_sizes) == len(next_mem_sizes), "Mismatched number of memory banks between send0 and next tile in TileAllreduceStage1Op {}.".format(self.id)
+
         for i in range(len(send_mem_sizes)):
             send_bank = list(send_mem_sizes.keys())[i]
             send_size = send_mem_sizes[send_bank]
@@ -106,10 +81,7 @@ class TileAllreduceStage2Op:
             assert send_size == next_size, "Mismatched send0 and next tile sizes in TileAllreduceStage1Op {}.".format(self.id)
             
             traces.append(InstructionSet.COPY(send_bank.bank_id, next_bank.bank_id, send_size, self.id))
-            self.stats.add_reads(send_size)
-            self.stats.add_writes(send_size)
-            # stats["reads"] += send_size
-            # stats["writes"] += send_size
+            self.stats.add_copy(send_size)
 
         return traces
         
@@ -135,16 +107,24 @@ class AllreduceLayer:
         next_node = comm_group[(comm_group.index(node_id) + 1) % len(comm_group)]
         self.next_node = next_node
         next_op = graph.get_op(next_node, uid)
-        self.next_tensor = self.input_tensor.clone(next_op["outputs"][0])
+
+        self.next_tensor = Tensor(
+            uid=next_op["inputs"][0],
+            dims=dims,
+            prec=prec,
+        )
         
         assert dims[-1] % len(comm_group) == 0, "Vector dimension must be divisible by the number of nodes in the communication group."
-        self.tile_size = [dims[0], dims[-1] // len(comm_group)]
+        # self.tile_size = [dims[0], dims[-1] // len(comm_group)]
+        self.tile_size = self.input_tensor.tile_size
 
         self.send_tiles = {}
         self.recv_tiles = {}
         self.next_tiles = {}
-        self.tile_ops = {}
-
+        self.stage1_ops = {}
+        self.reduce_ops = {}
+        self.stage2_ops = {}
+        
         self.stats = Stats()
 
         self.create_tiles()
@@ -157,7 +137,7 @@ class AllreduceLayer:
         self.output_tensor.map_to_memory(self.wafer.banks[self.node_id], tile_size=self.tile_size, addr_offset=0)
         self.next_tensor.map_to_memory(self.wafer.banks[self.next_node], tile_size=self.tile_size, addr_offset=0)
 
-        chunk_size = self.tile_size[-1]
+        chunk_size = self.dims[-1] // len(self.comm_group)
         for d, pD in enumerate(range(0, self.dims[-1], chunk_size)):
             tiled_B = min(chunk_size, self.dims[-1] - pD)
             self.send_tiles[d] = self.input_tensor.slice([(0, self.dims[0]), (pD, pD + tiled_B)])
@@ -211,32 +191,129 @@ class AllreduceLayer:
         '''
 
         num_rounds = len(self.comm_group) - 1
+        # Reduce stage
         for i in range(num_rounds):
             send_chunk_id = (self.node_id - i) % len(self.comm_group)
             recv_chunk_id = (self.node_id - i - 1) % len(self.comm_group)
             logging.debug("Reduce round {}: chunk{} node{} -> node{}".format(i, send_chunk_id, self.node_id, self.next_node))
-            self.tile_ops[i] = TileAllreduceStage1Op("{}_reduce_{}".format(self.uid, i), self.send_tiles[send_chunk_id], self.send_tiles[recv_chunk_id], self.recv_tiles[recv_chunk_id], self.next_tiles[send_chunk_id])
+
+            # Op to copy a chunk to the next node
+            self.stage1_ops[i] = TileAllreduceStage1Op("{}_stage1_{}".format(self.uid, i), self.send_tiles[send_chunk_id], self.next_tiles[send_chunk_id], self.comm_group)
+            
+            # Op to perform element-wise addition on the received chunk
+            self.reduce_ops[i] = TileReduceOp("{}_reduce_{}".format(self.uid, i), [self.send_tiles[recv_chunk_id], self.recv_tiles[recv_chunk_id]], self.send_tiles[recv_chunk_id])  # Placeholder for potential future use
         
+        # Gather stage
         for i in range(num_rounds):
             send_chunk_id = (self.node_id - i + 1) % len(self.comm_group)
             logging.debug("Gather round {}: chunk{} node{} -> node{}".format(i, send_chunk_id, self.node_id, self.next_node))
-            self.tile_ops[num_rounds+i] = TileAllreduceStage2Op("{}_gather_{}".format(self.uid, i), self.send_tiles[send_chunk_id], self.next_tiles[send_chunk_id])
+            
+            # Op to copy the final chunk to the next node in the gather stage
+            self.stage2_ops[i] = TileAllreduceStage2Op("{}_stage2_{}".format(self.uid, i), self.send_tiles[send_chunk_id], self.next_tiles[send_chunk_id], self.comm_group)
 
     def map_ops(self):
+        dedicated_core = self.wafer.get_core(self.node_id, 0)
         num_rounds = len(self.comm_group) - 1
         for i in range(num_rounds):
-            mem_sizes = self.tile_ops[i].send0_tile.get_physical_address()
+            mem_sizes = self.stage1_ops[i].send0_tile.get_physical_address()
             # assert len(mem_sizes) == 1, "AllreduceLayer currently only supports mapping 2D tiles to a single core."
             local_bank_id = list(mem_sizes.keys())[0].local_id
-            self.tile_ops[i].map_to_core(self.wafer.get_core(self.node_id, local_bank_id))
-            self.stats.merge(self.tile_ops[i].stats)
+            # self.tile_ops[i].map_to_core(self.wafer.get_core(self.node_id, local_bank_id))
+            self.stage1_ops[i].map_to_core(dedicated_core)
+            self.stats.merge(self.stage1_ops[i].stats)
 
+            cores_to_sync = [self.wafer.get_core(node_id, 0) for node_id in self.comm_group]
+            barrier = Barrier(f"{self.uid}_barrier_stage1_{i}", cores_to_sync)
+            barrier.map_to_core(dedicated_core)
+
+            self.reduce_ops[i].map_to_core(dedicated_core)
+            self.stats.merge(self.reduce_ops[i].stats)
+
+            cores_to_sync = [self.wafer.get_core(node_id, 0) for node_id in self.comm_group]
+            barrier = Barrier(f"{self.uid}_barrier_reduce_{i}", cores_to_sync)
+            barrier.map_to_core(dedicated_core)
+            
         for i in range(num_rounds):
-            mem_sizes = self.tile_ops[num_rounds+i].send_tile.get_physical_address()
+            mem_sizes = self.stage2_ops[i].send_tile.get_physical_address()
             # assert len(mem_sizes) == 1, "AllreduceLayer currently only supports mapping 2D tiles to a single core."
             local_bank_id = list(mem_sizes.keys())[0].local_id
-            self.tile_ops[num_rounds+i].map_to_core(self.wafer.get_core(self.node_id, local_bank_id))
-            self.stats.merge(self.tile_ops[num_rounds+i].stats)
+            # self.tile_ops[num_rounds+i].map_to_core(self.wafer.get_core(self.node_id, local_bank_id))
+            self.stage2_ops[i].map_to_core(dedicated_core)
+            self.stats.merge(self.stage2_ops[i].stats)
 
-    def print_stats(self):
-        self.stats.print_stats(self.uid)
+            cores_to_sync = [self.wafer.get_core(node_id, 0) for node_id in self.comm_group]
+            barrier = Barrier(f"{self.uid}_barrier_gather_{i}", cores_to_sync)
+            barrier.map_to_core(dedicated_core)
+            
+    def calc_expected(self):
+        vector_size = eval("*".join(map(str, self.dims))) * dtype_to_byte(self.input_tensor.prec)
+        num_rounds = len(self.comm_group) - 1
+
+        chunk_size = vector_size / len(self.comm_group)
+        total_copy = 2 * num_rounds * chunk_size # total data copied per node for both reduce and gather stages
+        expected = {"copy": total_copy}
+        
+        expected["reads"] = chunk_size * 2 * num_rounds # in each round, each node reads two chunks, add them, and writes one back
+        expected["writes"] = chunk_size * num_rounds 
+        expected["vector_flops"] = eval("*".join(map(str, self.dims))) / len(self.comm_group) * num_rounds 
+
+        return expected
+
+    def log_stats(self):
+        expected = self.calc_expected()
+        self.stats.log_stats(self.uid, self.__class__.__name__, self.node_id, expected=expected, dims=self.dims, tile_size=self.tile_size)
+
+
+
+if __name__ == "__main__":
+    from core_level.common.wafer import Wafer
+    from core_level.common.tensor import reset_tensor_registry
+    from core_level.common.graph import Graph
+
+    reset_tensor_registry()
+
+    node_grid = (2, 2)
+    core_grid = (4, 4)
+
+    wafer = Wafer(node_grid, core_grid)
+
+    ops = {}
+    for node_id in range(wafer.num_nodes):
+        ops[node_id] = {}
+        op_id = f"allreduce_0"
+        ops[node_id][op_id] = {
+            "type": "Allreduce",
+            "inputs": [f"{node_id}:input_tensor"],
+            "outputs": [f"{node_id}:output_tensor"]
+        }
+    
+    graph = Graph(iter=0, num_nodes=wafer.num_nodes, ops=ops)
+
+    dims = [32, 64]
+    comm_group = [0, 1]
+    tile_size = [32, 32]
+
+    input_tensor = Tensor(
+        uid="0:input_tensor",
+        dims=dims,
+        prec="fp16",
+    )
+    input_tensor.map_to_memory(wafer.banks[0], tile_size=tile_size, addr_offset=0)
+
+    for node_id in comm_group:
+        layer = AllreduceLayer(f"allreduce_0", node_id, comm_group, graph, dims, wafer, "fp16")
+        expected = layer.calc_expected()
+        assert expected["copy"] == layer.stats.get_copy(), "AllreduceLayer stats do not match expected values."
+        assert expected["reads"] == layer.stats.get_reads(), "AllreduceLayer stats do not match expected values."
+        assert expected["writes"] == layer.stats.get_writes(), "AllreduceLayer stats do not match expected values."
+        assert expected["vector_flops"] == layer.stats.get_vector(), "AllreduceLayer stats do not match expected values."
+
+        layer.log_stats()
+
+    traces = wafer.get_traces()
+    for node_id in traces:
+        print("\n=== Node {} Traces ===".format(node_id))
+        for core_id in traces[node_id]:
+            print("-- Core {} --".format(core_id))
+            for inst in traces[node_id][core_id]:
+                print(inst)
