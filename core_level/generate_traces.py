@@ -177,10 +177,16 @@ def generate_traces(args):
                 layer_uid = row["uid"]
 
                 axis = int(row["Dimensions"].split(" -> ")[0])
-                input0_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
-                input1_dims = list(map(int, row["Dimensions"].split(" -> ")[2][1:-1].split(", ")))
+                concat_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
+                output_dims = list(map(int, row["Dimensions"].split(" -> ")[2][1:-1].split(", ")))
 
-                layer = Concat(layer_uid, node_id, axis, [input0_dims, input1_dims], graph, prec)
+                input_dims = []
+                for d in concat_dims:
+                    input_dim = list(output_dims)
+                    input_dim[axis] = d
+                    input_dims.append(input_dim)
+
+                layer = Concat(layer_uid, node_id, axis, input_dims, graph, prec)
 
             else:
                 # raise NotImplementedError

@@ -174,7 +174,7 @@ class Concat:
 
         self.axis = axis
 
-        assert len(input_tensors) == 2, "Only support concatenating two tensors for now"
+        # assert len(input_tensors) == 2, "Only support concatenating two tensors for now"
 
         node_id = input_tensors[0].node_id
         for tensor in input_tensors[1:]:
@@ -196,6 +196,6 @@ class Concat:
         self.output_tensor = Tensor(self.uid, node_id, list(self.new_dims))
 
     def forward(self, stats):
-        stats.append(self.uid, "Concat", 0, 0, 0, 0, comm_group=None, dims=f"{self.axis} -> {self.input_tensors[0].dims} -> {self.input_tensors[1].dims}")
+        stats.append(self.uid, "Concat", 0, 0, 0, 0, comm_group=None, dims=f"{self.axis} -> {[tensor.dims[self.axis] for tensor in self.input_tensors]} -> {self.new_dims}")
         get_compute_graph().add_node(self, [tensor for tensor in self.input_tensors], [self.output_tensor], attrs=None)        
         return self.output_tensor

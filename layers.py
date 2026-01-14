@@ -1178,7 +1178,7 @@ class DSv3DecodeLayer(Layer):
 
         x = self.attention.forward(x, ctx_len, stats=stats)
 
-        # self.ffn.forward(x, stats=stats)
+        self.ffn.forward(x, stats=stats)
 
         return Tensor(self.layer_id+"_out", self.dist_info.rank, x.dims)
 
