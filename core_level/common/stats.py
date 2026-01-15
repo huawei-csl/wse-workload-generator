@@ -1,4 +1,5 @@
 import logging 
+import numpy as np
 
 from utils import byte_to_str, flops_to_str
 
@@ -8,6 +9,7 @@ class Stats:
             "reads": 0,
             "writes": 0,
             "copy": 0,
+            "multicast": 0,
             "cube_flops": {core_id: 0 for core_id in core_ids} if core_ids is not None else {},
             "vector_flops": {core_id: 0 for core_id in core_ids} if core_ids is not None else {},
         }
@@ -29,6 +31,12 @@ class Stats:
     
     def get_copy(self):
         return self.data["copy"]
+
+    def add_multicast(self, size):
+        self.data["multicast"] += size
+    
+    def get_multicast(self):
+        return self.data["multicast"]
 
     def add_cube(self, core_id, count):
         if core_id not in self.data["cube_flops"]:
@@ -59,6 +67,7 @@ class Stats:
         self.data["reads"] += other.data["reads"]
         self.data["writes"] += other.data["writes"]
         self.data["copy"] += other.data["copy"]
+        self.data["multicast"] += other.data["multicast"]
 
         for core_id in other.data["cube_flops"]:
             self.add_cube(core_id, other.data["cube_flops"][core_id])
@@ -87,9 +96,10 @@ class Stats:
         msg += f"\treads: {byte_to_str(self.get_reads())}"
         msg += f"\twrites: {byte_to_str(self.get_writes())}"
         msg += f"\tcopy: {byte_to_str(self.get_copy())}"
+        msg += f"\tmulticast: {byte_to_str(self.get_multicast())}"
         msg += f"\tcube: {flops_to_str(self.get_total_cube())}"
         msg += f"\tvector: {flops_to_str(self.get_vector())}"
-        msg += f"\n\tmemory_overhead: {((self.get_reads() + self.get_writes()) / (expected["reads"]+expected["writes"]) if expected else 0):<.2f}"
+        msg += f"\n\tmemory_overhead: {((self.get_reads() + self.get_writes()) / (expected["reads"] + expected["writes"] + np.finfo(float).eps) if expected else 0):<.2f}"
         msg += f"\tcube_occupancy: {self.get_cube_occupancy():.2f}"
         msg += "\n"
         

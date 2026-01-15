@@ -8,6 +8,8 @@ class InstructionSet:
         "WRITE",
         "GEMM",
         "ADD",
+        "COPY",
+        "MULTICAST",
         "BARRIER"
     ]
 
@@ -18,7 +20,6 @@ class InstructionSet:
     def get_all_instructions(cls) -> List[str]:
         return cls._all_instructions
     
-
     '''
     READ instruction to read data from a memory bank.
     Args:
@@ -105,6 +106,14 @@ class InstructionSet:
             comment = ""
         return "COPY {} {} {}\t\t;{}".format(src_bank_id, dst_bank_id, size, comment)
     
+    @classmethod
+    def MULTICAST(cls, src_bank_id: int, dst_bank_ids: List[int], size: int, comment: Optional[str] = None) -> str:
+        logging.debug("Multicast {} bytes from {} to {}".format(size, src_bank_id, [dst_bank_ids]))
+
+        if comment is None:
+            comment = ""
+        return "MULTICAST {} {} {}\t\t;{}".format(src_bank_id, " ".join(map(str,dst_bank_ids)), size, comment)
+
     '''
     BARRIER instruction to synchronize multiple cores.
     Args:
@@ -154,6 +163,11 @@ class InstructionSet:
             dst_bank_id = int(parts[2])
             size = int(parts[3])
             return ("COPY", src_bank_id, dst_bank_id, size, comment)
+        elif instr_type == "MULTICAST":
+            src_bank_id = int(parts[1])
+            dst_bank_ids = list(map(int, parts[2:-1]))
+            size = int(parts[-1])
+            return ("MULTICAST", src_bank_id, dst_bank_ids, size, comment)
         elif instr_type == "BARRIER":
             core_ids = list(map(int, parts[1:]))
             return ("BARRIER", core_ids, comment)
