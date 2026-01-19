@@ -50,7 +50,7 @@ class Stats:
         max_flops = max([self.data["cube_flops"][core_id] for core_id in self.data["cube_flops"]])
         avg_flops = sum([self.data["cube_flops"][core_id] for core_id in self.data["cube_flops"]]) / len(self.data["cube_flops"])
 
-        return avg_flops / max_flops
+        return avg_flops / (max_flops + np.finfo(float).eps)
     
     def get_total_cube(self):
         return sum(self.data["cube_flops"][core_id] for core_id in self.data["cube_flops"] )

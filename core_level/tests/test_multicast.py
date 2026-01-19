@@ -47,4 +47,4 @@ def test_multicast(dims, tile_size, src_id, dst_ids):
     assert expected["multicast"] == layer.stats.get_multicast(), f"Expected multicast bytes {expected['multicast']}, got {layer.stats.get_multicast()}"
 
 if __name__=="__main__":
-    test_multicast([32, 32], [16, 16], 1, [2, 3])
+    test_multicast([16, 16], [16, 16], 1, [2, ])

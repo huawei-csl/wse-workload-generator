@@ -12,6 +12,7 @@ from core_level.common.graph import Graph
         ([0, 1], [8, 8], [2, 2], 0), # single element slice along axis 0
         ([4, 8], [16, 16], [4, 4], 0), # larger tensor slice along axis 0
         ([8, 14], [8, 16, 8], [4, 4, 4], 1), # 3-D tensor slice along axis 1
+        ([5, 6], [8, 16, 8], [4, 4, 4], 1), # Single element, not aligned to tile size
     ]
 )
 def test_slice(index_rng, input_dims, tile_size, axis):

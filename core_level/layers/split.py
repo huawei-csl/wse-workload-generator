@@ -168,4 +168,3 @@ if __name__=="__main__":
             out2 = layer.output_tensor1.get_physical_address([(e, e+1) for e in output_ind])
         
         assert out1 == out2, "Mapping mismatch for input index ({}) vs output index ({}). Got {} vs {}.".format(input_ind, output_ind, out1, out2)
-

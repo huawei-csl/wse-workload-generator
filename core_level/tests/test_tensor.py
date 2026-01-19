@@ -77,15 +77,15 @@ def test_tensor_memory_layout(tile_size, addr_offset, node_id, dims, ind_rng, ex
 
 
 @pytest.mark.parametrize(
-    "orig_dims,target_dims",
+    "orig_dims,target_dims,tile_size",
     [
-        ([16, 32], [16, 32]), # test no-op
-        ([16, 32], [16, 1, 32]), # test unsqueeze
-        ([16, 1, 32], [16, 32]), # test squeeze
-        ([32, 2, 1], [32, 1, 1, 2]), # test multi squeeze and unsqueeze
+        ([16, 32], [16, 32], [4, 4]), # test no-op
+        ([16, 32], [16, 1, 32],  [4, 4]), # test unsqueeze
+        ([16, 1, 32], [16, 32],  [4, 1, 4]), # test squeeze
+        ([32, 2, 1], [32, 1, 1, 2], [4, 2, 1]), # test multi squeeze and unsqueeze
     ]
 )
-def test_expand_dims(orig_dims, target_dims):
+def test_expand_dims(orig_dims, target_dims, tile_size):
     from core_level.common.wafer import Wafer
 
     wafer = Wafer([4,4], [6,6])
@@ -93,7 +93,6 @@ def test_expand_dims(orig_dims, target_dims):
     reset_tensor_registry()
     
     node_id = 0
-    tile_size = [1, 1, 1, 1]
     addr_offset = 0
 
     tensor_a = Tensor("A", orig_dims, "fp16")

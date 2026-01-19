@@ -154,6 +154,8 @@ class Slice:
         assert index_rng is not None, "Indices must form a valid range with consistent step size"
         self.index_rng = index_rng
 
+        assert index_rng[1] <= input_tensor.dims[axis], "Index out of range"
+
         self.input_tensor = input_tensor
 
         self.new_dims = list(input_tensor.dims)

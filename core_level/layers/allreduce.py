@@ -115,7 +115,6 @@ class AllreduceLayer:
         )
         
         assert dims[-1] % len(comm_group) == 0, "Vector dimension must be divisible by the number of nodes in the communication group."
-        # self.tile_size = [dims[0], dims[-1] // len(comm_group)]
         self.tile_size = self.input_tensor.tile_size
 
         self.send_tiles = {}

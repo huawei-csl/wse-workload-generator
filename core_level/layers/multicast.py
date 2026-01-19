@@ -3,6 +3,7 @@ import logging
 
 from typing import List
 from utils import dtype_to_byte
+import itertools
 
 from core_level.common.stats import Stats
 from core_level.common.isa import InstructionSet
@@ -34,12 +35,12 @@ class TileMulticastOp:
             recv_banks = []
             for d in range(len(self.out_tiles)):
                 recv_mem_sizes = self.out_tiles[d].get_physical_address()
-                assert len(send_mem_sizes) == len(recv_mem_sizes), "Mismatched number of memory banks between send0 and next tile in TileAllreduceStage1Op {}.".format(self.id)
+                assert len(send_mem_sizes) == len(recv_mem_sizes), "Mismatched number of memory banks between send0 and next tile in TileMulticastOp {}.".format(self.id)
 
                 recv_bank = list(recv_mem_sizes.keys())[i]
                 recv_size = recv_mem_sizes[recv_bank]
 
-                assert send_size == recv_size, "Mismatched send0 and next tile sizes in TileAllreduceStage1Op {}.".format(self.id)
+                assert send_size == recv_size, "Mismatched send0 and next tile sizes in TileMulticastOp {}.".format(self.id)
                 
                 recv_banks.append(recv_bank.bank_id)
 
@@ -58,8 +59,7 @@ class MulticastLayer:
         dsts: list of destination node indices
         graph: compute graph object
         dims: dimensions of the vector to be multicasted
-        cores: list of Core objects available for mapping operations
-        banks: list of MemoryBank objects available for mapping tiles
+        wafer: wafer that the layer is mapped to
         prec: precision of the data (e.g., "fp16", "fp8")
     '''
     def __init__(self, uid, src, dsts, graph, dims, wafer, prec) -> None:
@@ -72,12 +72,15 @@ class MulticastLayer:
 
         self.graph_op = graph.get_op(src, uid)
 
+        assert len(dims) in [1, 2, 3], "Multicast operation supports only 1D, 2D, or 3D tensors."
+
         self.input_tensor = Tensor(
             uid=self.graph_op["inputs"][0],
             dims=dims,
             prec=self.prec
         )
-        self.tile_size = self.input_tensor.tile_size
+        assert self.input_tensor.tile_size is not None, "Input tensor {} of Multicast operation {} on node {} does not have tile size.".format(self.input_tensor.uid, uid, src)
+        self.tile_size = list(self.input_tensor.tile_size)
 
         self.output_tensors = []
         for d, dst in enumerate(dsts):
@@ -100,30 +103,133 @@ class MulticastLayer:
         self.map_ops()
 
     def create_tiles(self):
-        self.input_tensor.map_to_memory(self.wafer.banks[self.src], tile_size=self.tile_size, addr_offset=0)
+        def _create1d(self):
+            D0 = self.dims
+            T0 = self.input_tensor.tile_size
+
+            for i0, p0 in enumerate(range(0, D0, T0)):
+                tiled_0 = min(T0, D0 - p0)
+
+                self.in_tiles[i0] = self.input_tensor.slice([(i0*T0, i0*T0 + tiled_0),])
+
+                self.out_tiles[i0] = []
+                for d, dst_node in enumerate(self.dsts):
+                    self.out_tiles[i0].append(self.output_tensors[d].slice([(i0*T0, i0*T0 + tiled_0),]))
+
+        def _create2d(self):
+            D0, D1 = self.dims
+            T0, T1 = self.input_tensor.tile_size
+
+            for i0, p0 in enumerate(range(0, D0, T0)):
+                self.in_tiles[i0] = {}
+                self.out_tiles[i0] = {}
+                for i1, p1 in enumerate(range(0, D1, T1)):
+                    tiled_0 = min(T0, D0 - p0)
+                    tiled_1 = min(T1, D1 - p1)
+
+                    self.in_tiles[i0][i1] = self.input_tensor.slice([(i0*T0, i0*T0 + tiled_0), (i1*T1, i1*T1 + tiled_1)])
+
+                    self.out_tiles[i0][i1] = []
+                    for d, dst_node in enumerate(self.dsts):
+                        self.out_tiles[i0][i1].append(self.output_tensors[d].slice([(i0*T0, i0*T0 + tiled_0), (i1*T1, i1*T1 + tiled_1)]))
+
+        def _create3d(self):
+            D0, D1, D2 = self.dims
+            T0, T1, T2 = self.input_tensor.tile_size
+
+            for i0, p0 in enumerate(range(0, D0, T0)):
+                self.in_tiles[i0] = {}
+                self.out_tiles[i0] = {}
+                for i1, p1 in enumerate(range(0, D1, T1)):
+                    self.in_tiles[i0][i1] = {}
+                    self.out_tiles[i0][i1] = {}
+                    for i2, p2 in enumerate(range(0, D2, T2)):
+                        tiled_0 = min(T0, D0 - p0)
+                        tiled_1 = min(T1, D1 - p1)
+                        tiled_2 = min(T2, D2 - p2)
+
+                        self.in_tiles[i0][i1][i2] = self.input_tensor.slice([(i0*T0, i0*T0 + tiled_0), (i1*T1, i1*T1 + tiled_1), (i2*T2, i2*T2 + tiled_2)])
+
+                        self.out_tiles[i0][i1][i2] = []
+                        for d, dst_node in enumerate(self.dsts):
+                            self.out_tiles[i0][i1][i2].append(self.output_tensors[d].slice([(i0*T0, i0*T0 + tiled_0), (i1*T1, i1*T1 + tiled_1), (i2*T2, i2*T2 + tiled_2)]))
+
         for d, dst in enumerate(self.dsts):
             self.output_tensors[d].map_to_memory(self.wafer.banks[dst], tile_size=self.tile_size, addr_offset=0)
 
-        # Tile from last dimension
-        for d0, pD0 in enumerate(range(0, self.dims[-1], self.tile_size[-1])):
-            tiled_B = min(self.tile_size[-1], self.dims[-1] - pD0)
+        if len(self.dims) == 1:
+            _create1d(self)
+        elif len(self.dims) == 2:
+            _create2d(self)
+        elif len(self.dims) == 3:
+            _create3d(self)
+        else:
+            raise NotImplementedError("MulticastLayer.create_tiles() only supports 1D, 2D and 3D tensors.")
 
-            slice_indices = [(0, d) for d in self.dims[0:-1]] + [(pD0, pD0 + tiled_B)]
-
-            self.in_tiles[d0] = self.input_tensor.slice(slice_indices)
-            self.out_tiles[d0] = []
-            for d, dst_node in enumerate(self.dsts):
-                self.out_tiles[d0].append(self.output_tensors[d].slice(slice_indices))
 
     def create_ops(self):
-        for b in self.in_tiles:
-            self.tile_ops[b] = TileMulticastOp("{}_multicast_{}".format(self.uid, b), self.in_tiles[b], self.out_tiles[b])
+        def get_dict_val(dict, ind: List[int]):
+            tmp_dict = dict
+            for i in ind:
+                tmp_dict = tmp_dict[i]
+            return tmp_dict
+
+        def set_dict_val(dict, ind: List[int], value):
+            tmp_dict = dict
+            for i in ind[:-1]:
+                if i not in tmp_dict:
+                    tmp_dict[i] = {}
+                tmp_dict = tmp_dict[i]
+            tmp_dict[ind[-1]] = value
+
+        indices = []
+        tmp_ops = self.in_tiles
+        for i in range(len(self.dims)):
+            indices.append(list(tmp_ops.keys()))
+            tmp_ops = tmp_ops[0]
+        indices = list(itertools.product(*indices))
+
+        for ind in indices:
+            in_tiles = get_dict_val(self.in_tiles, ind)
+            out_tiles = get_dict_val(self.out_tiles, ind)
+            op = TileMulticastOp(
+                "{}_multicast_{}".format(self.uid, "_".join(map(str, ind))), 
+                in_tiles, 
+                out_tiles
+            )
+            set_dict_val(self.tile_ops, ind, op)
+                
+        # for i0 in self.in_tiles:
+        #     self.tile_ops[i0] = {}
+        #     for i1 in self.in_tiles[i0]:
+        #         self.tile_ops[i0][i1] = {}
+        #         for i2 in self.in_tiles[i0][i1]:
+        #             self.tile_ops[i0][i1][i2] = TileMulticastOp(
+        #                 "{}_multicast_{}_{}_{}".format(self.uid, i0, i1, i2), 
+        #                 self.in_tiles[i0][i1][i2], 
+        #                 self.out_tiles[i0][i1][i2]
+        #             )
 
     def map_ops(self):
+        def get_dict_val(dict, ind: List[int]):
+            tmp_dict = dict
+            for i in ind:
+                tmp_dict = tmp_dict[i]
+            return tmp_dict
+        
         dedicated_core = self.wafer.get_core(self.src, 0)
-        for b in self.in_tiles:
-            self.tile_ops[b].map_to_core(dedicated_core)
-            self.stats.merge(self.tile_ops[b].stats)
+
+        indices = []
+        tmp_ops = self.tile_ops
+        for i in range(len(self.dims)):
+            indices.append(list(tmp_ops.keys()))
+            tmp_ops = tmp_ops[0]
+        indices = list(itertools.product(*indices))
+
+        for ind in indices:
+            op = get_dict_val(self.tile_ops, ind)
+            op.map_to_core(dedicated_core)
+            self.stats.merge(op.stats)
 
     def calc_expected(self):
         expected = {"multicast": eval("*".join(map(str, self.dims))) * dtype_to_byte(self.input_tensor.prec)}

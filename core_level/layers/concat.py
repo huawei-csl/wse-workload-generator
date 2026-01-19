@@ -12,12 +12,10 @@ class Concat:
         self.node_id = node_id
         self.prec = prec
 
-        # input0_dims, input1_dims = input_dims
         assert -len(input_dims[0]) <= axis < len(input_dims[0]), "Concat operation {} on node {} has invalid axis {} for input_dims {}.".format(uid, node_id, axis, input0_dims)
         if axis < 0:
             axis += len(input_dims[0])
 
-        # assert len(input_dims) == 2, "Concat operation {} on node {} requires two input tensors.".format(uid, node_id)
         for d in range(len(input_dims[0])):
             if d == axis:
                 continue
@@ -26,8 +24,6 @@ class Concat:
                 assert input_dims[0][d] == input_dims[i][d], "Concat operation {} on node {} has incompatible dimensions: input0_dims {} vs input1_dims {}.".format(uid, node_id, input_dims[0], input_dims[i])
 
         self.input_dims = input_dims
-        # self.input0_dims = input0_dims
-        # self.input1_dims = input1_dims
         self.axis = axis
 
         self.graph_op = graph.get_op(node_id, uid)
@@ -39,27 +35,11 @@ class Concat:
                 dims=input_dims[i],
                 prec=self.prec,
             )
-            assert input_tensor.tile_size is not None, "Input tensor {} of View operation {} on node {} does not have tile size.".format(input_tensor.uid, uid, node_id)
+            assert input_tensor.tile_size is not None, "Input tensor {} of Concat operation {} on node {} does not have tile size.".format(input_tensor.uid, uid, node_id)
             self.input_tensors.append(input_tensor)
         
         for i in range(1, len(self.input_tensors)):
             assert self.input_tensors[0].tile_size == self.input_tensors[i].tile_size, "Concat operation {} on node {} requires input tensors to have the same tile size.".format(uid, node_id)
-
-        # self.input_tensor0 = Tensor(
-        #     uid=self.graph_op["inputs"][0],
-        #     dims=input0_dims,
-        #     prec=self.prec,
-        # )
-        # assert self.input_tensor0.tile_size is not None, "Input tensor {} of View operation {} on node {} does not have tile size.".format(self.input_tensor0.uid, uid, node_id)
-
-        # self.input_tensor1 = Tensor(
-        #     uid=self.graph_op["inputs"][1],
-        #     dims=input1_dims,
-        #     prec=self.prec,
-        # )
-        # assert self.input_tensor1.tile_size is not None, "Input tensor {} of View operation {} on node {} does not have tile size.".format(self.input_tensor0.uid, uid, node_id)
-
-        # assert self.input_tensor0.tile_size == self.input_tensor1.tile_size, "Concat operation {} on node {} requires input tensors to have the same tile size.".format(uid, node_id)
 
         self.output_dims = deepcopy(input_dims[0])
         self.output_dims[axis] = sum([input_dims[i][axis] for i in range(len(input_dims))])
@@ -91,44 +71,6 @@ class Concat:
             tmp_dict[ind[-1]] = value
 
         new_map = {}
-
-        # tmp_dict = input_map0
-        # indices0 = []
-        # for i in range(len(self.input0_dims)):
-        #     indices0.append(list(tmp_dict.keys()))
-        #     tmp_dict = tmp_dict[0]
-        # indices0 = list(itertools.product(*indices0))
-
-        # for ind0 in indices0:
-        #     val = get_dict_val(input_map0, ind0)
-        #     set_dict_val(new_map, list(ind0), val)
-
-        # tmp_dict = input_map1
-        # indices1 = []
-        # for i in range(len(self.input1_dims)):
-        #     indices1.append(list(tmp_dict.keys()))
-        #     tmp_dict = tmp_dict[0]
-        # indices1 = list(itertools.product(*indices1))
-
-        # offset = self.input0_dims[self.axis] // self.input_tensor0.tile_size[self.axis]
-        # for ind1 in indices1:
-        #     new_ind1 = list(ind1)
-        #     new_ind1[self.axis] += offset
-
-        #     val = get_dict_val(input_map1, ind1)
-
-        #     new_range = list(val["range"])
-        #     new_range[self.axis] = (new_range[self.axis][0] + self.input0_dims[self.axis], new_range[self.axis][1] + self.input0_dims[self.axis])
-
-        #     set_dict_val(
-        #         new_map, 
-        #         new_ind1, 
-        #         {
-        #             "range": new_range,
-        #             "bank": val["bank"]
-        #         }
-        #     )
-
 
         addr_offset = 0
 
@@ -164,7 +106,7 @@ class Concat:
         return new_map
 
     def log_stats(self):
-        self.stats.log_stats(self.uid, self.__class__.__name__, self.node_id, dims=self.input_dims, tile_size=self.input_tensor0.tile_size)
+        self.stats.log_stats(self.uid, self.__class__.__name__, self.node_id, dims=self.input_dims, tile_size=self.input_tensors[0].tile_size)
 
 
 

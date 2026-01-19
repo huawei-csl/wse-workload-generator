@@ -7,9 +7,6 @@ from core_level.common.tile import Tile
 from utils import dtype_to_byte
 from utils import intceil
 
-
-
-
 def reset_tensor_registry():
     TensorRegistry.reset()
 
@@ -37,7 +34,7 @@ class TensorRegistry:
 Tensor class representing a multi-dimensional array.
 '''
 class Tensor:
-    def __new__(cls, uid, dims, prec, *args, **kwargs):
+    def __new__(cls, uid, dims, prec, assert_exist = False, *args, **kwargs):
         if TensorRegistry.is_exist(uid):
             existing_tensor = TensorRegistry.get(uid)
 
@@ -51,6 +48,10 @@ class Tensor:
             assert existing_tensor.dims == dims, "Tensor dimensions do not match for uid {}. existing dims: {} new dims: {}".format(uid, existing_tensor.dims, dims)
             assert existing_tensor.prec == prec, "Tensor precision does not match for uid {}. existing prec: {} new prec: {}".format(uid, existing_tensor.prec, prec)
             return existing_tensor
+        
+        if assert_exist:
+            raise ValueError("assert_exist flag is set but tensor with uid {} does not exist.".format(uid))
+        
         return super().__new__(cls)
 
     def __init__(self, uid, dims, prec) -> None:
@@ -172,6 +173,8 @@ class Tensor:
             return
         
         assert self.tile_size is None, "Tensor {} is already mapped to memory with tile size {}.".format(self.uid, self.tile_size)
+        tile_size = list(tile_size)
+        assert len(tile_size) == self.n_dims, "Tile size dimensions do not match tensor dimensions."
         self.tile_size = tile_size
 
         if addr_offset is None:
@@ -201,8 +204,8 @@ class Tensor:
             self.addr_offset = addr_offset
 
         self.memory_map = memory_map
-        self.tile_size = tile_size
-
+        self.tile_size = list(tile_size)
+        assert len(self.tile_size) == self.n_dims, "Tile size dimensions do not match tensor dimensions."
 
     '''
     Calculate the physical banks and memory sizes for a given index range.

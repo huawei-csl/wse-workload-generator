@@ -15,6 +15,7 @@ from core_level.layers.split import Split
 from core_level.layers.transpose import Transpose
 from core_level.layers.concat import Concat
 from core_level.layers.slice import Slice
+from core_level.layers.reduce import Sum
 
 from core_level.common.graph import init_graph
 from core_level.common.tile import load_tiling_config
@@ -51,6 +52,7 @@ def generate_traces(args):
         if os.path.isfile(fpath):
             os.remove(fpath)
     
+    layer_attrs = {}
     for node_id in range(wafer.num_nodes):
         logging.info("Generating traces for node {}...".format(node_id))
 
@@ -63,14 +65,14 @@ def generate_traces(args):
             for row in csv_reader:
                 data.append(row)
 
-        # Print loaded data for debugging
+        layer_attrs[node_id] = {}
         for row in data:
             if args.layers != "all":
                 if row["uid"].split("_")[0] not in layers_to_process:
                     continue
 
             if row["operation"] == "Linear":
-                layer_uid = row["uid"]
+                uid = row["uid"]
 
                 in_dims = row["Dimensions"].split(" x ")[0][1:-1].split(", ")
                 M, K = int(in_dims[0]), int(in_dims[1])
@@ -80,12 +82,26 @@ def generate_traces(args):
 
                 dims = (M, K, N)
                 
-                tile_size = load_tiling_config("configs/tiling.json", "Linear", dims, layer_uid)
+                tile_size = load_tiling_config("configs/tiling.json", "Linear", dims, uid)
 
-                layer = LinearLayer(layer_uid, node_id, graph, dims, tile_size, wafer, prec)
+                layer_attrs[node_id][uid] = {
+                    "type": LinearLayer, 
+                    "attrs":{"uid": uid, "node_id": node_id, "graph": graph, "dims": dims, "tile_size": tile_size, "wafer": wafer, "prec": prec}
+                }
+
+            elif row["operation"] == "Sum":
+                uid = row["uid"]
+                input_dims = list(map(int, row["Dimensions"].split(" -> ")[0][1:-1].split(", ")))
+                axis = int(row["Dimensions"].split(" -> ")[1])
+                output_dims = list(map(int, row["Dimensions"].split(" -> ")[2][1:-1].split(", ")))
+
+                layer_attrs[node_id][uid] = {
+                    "type": Sum, 
+                    "attrs":{"uid": uid, "node_id": node_id, "axis": axis, "input_dims": input_dims, "graph": graph, "wafer": wafer, "prec": prec}
+                }
 
             elif row["operation"] == "GroupedLinear":
-                layer_uid = row["uid"]
+                uid = row["uid"]
 
                 in_dims = row["Dimensions"].split(" x ")[0][1:-1].split(", ")
                 B, M, K = int(in_dims[0]), int(in_dims[1]), int(in_dims[2])
@@ -95,10 +111,13 @@ def generate_traces(args):
                 B, M, N = int(out_dims[0]), int(out_dims[1]), int(out_dims[2])
 
                 dims = (B, M, K, N)
-                layer = GroupedLinearLayer(layer_uid, node_id, graph, dims, wafer, prec)
+                layer_attrs[node_id][uid] = {
+                    "type": GroupedLinearLayer, 
+                    "attrs":{"uid": uid, "node_id": node_id, "graph": graph, "dims": dims, "wafer": wafer, "prec": prec}
+                }
 
             elif row["operation"] == "MLAAbsorbAttention":
-                layer_uid = row["uid"]
+                uid = row["uid"]
                 out_dims = row["Dimensions"].split(" -> ")[-1][1:-1].split(", ")
                 bsz, seqlen_q, num_heads, kv_lora_rank = int(out_dims[0]), int(out_dims[1]), int(out_dims[2]), int(out_dims[3])
                 assert seqlen_q == 1, "Only support seqlen_q == 1 for decoding."
@@ -110,72 +129,91 @@ def generate_traces(args):
                 kv_dims = bsz, seqlen_kv, kv_lora_rank
                 pe_dims = bsz, seqlen_kv, qk_rope_head_dim
 
-                q_tile_size = load_tiling_config("configs/tiling.json", "AttentionQ", q_dims, layer_uid)
-                kv_tile_size = load_tiling_config("configs/tiling.json", "AttentionKV", kv_dims, layer_uid)
+                q_tile_size = load_tiling_config("configs/tiling.json", "AttentionQ", q_dims, uid)
+                kv_tile_size = load_tiling_config("configs/tiling.json", "AttentionKV", kv_dims, uid)
 
-                layer = MLALayer(layer_uid, node_id, graph, q_dims, kv_dims, pe_dims, q_tile_size, kv_tile_size, wafer, prec)
+                layer_attrs[node_id][uid] = {
+                    "type": MLALayer, 
+                    "attrs":{
+                        "uid": uid,
+                        "node_id": node_id,
+                        "graph": graph,
+                        "q_dims": q_dims,
+                        "kv_dims": kv_dims,
+                        "pe_dims": pe_dims,
+                        "q_tile_size": q_tile_size,
+                        "kv_tile_size": kv_tile_size,
+                        "wafer": wafer,
+                        "prec": prec
+                    }
+                }
                 
             elif row["operation"] == "Multicast":
-                layer_uid = row["uid"]
-                dims = row["Dimensions"][1:-1].split(",")
-                dims = [int(dims[0]),]
+                uid = row["uid"]
+                dims = list(map(int, row["Dimensions"][1:-1].split(","))) 
                 comm_group = row["comm. group"][1:-1].split(",")
                 dst_nodes = list(map(int, comm_group))
 
-                layer = MulticastLayer(layer_uid, node_id, dst_nodes, graph, dims, wafer, prec)
+                layer_attrs[node_id][uid] = {
+                    "type": MulticastLayer, 
+                    "attrs":{"uid": uid, "src": node_id, "dsts": dst_nodes, "graph": graph, "dims": dims, "wafer": wafer, "prec": prec}
+                }
 
             elif row["operation"] == "Unicast":
-                layer_uid = row["uid"]
-                dims = row["Dimensions"][1:-1].split(",")
-                assert len(dims) == 1
-                dims = [int(dims[0]),]
+                uid = row["uid"]
+                dims = list(map(int, row["Dimensions"][1:-1].split(", ")))
                 dst_node = int(row["comm. group"])
 
-                layer = UnicastLayer(layer_uid, node_id, dst_node, graph, dims, wafer, prec)
+                layer_attrs[node_id][uid] = {
+                    "type": UnicastLayer, 
+                    "attrs":{"uid": uid, "node_id": node_id, "src": node_id, "dst": dst_node, "graph": graph, "dims": dims, "wafer": wafer, "prec": prec}
+                }
 
             elif row["operation"] == "AllReduce":
-                layer_uid = row["uid"]
+                uid = row["uid"]
                 dims = list(map(int, row["Dimensions"][1:-1].split(", ")))
                 comm_group = list(map(int, row["comm. group"][1:-1].split(",")))
 
-                layer = AllreduceLayer(layer_uid, node_id, comm_group, graph, dims, wafer, prec)
-
-            elif row["operation"] == "AlltoAll":
-                layer_uid = row["uid"]
-                dims = list(map(int, row["Dimensions"][1:-1].split(", ")))
-
-                comm_group = list(map(int, row["comm. group"][1:-1].split(",")))
-                dst_nodes = list(map(int, comm_group))
-
-                # model all-to-all as multicast from each node to all nodes
-                layer = MulticastLayer(layer_uid, node_id, dst_nodes, graph, dims, wafer, prec)
+                layer_attrs[node_id][uid] = {
+                    "type": AllreduceLayer, 
+                    "attrs":{"uid": uid, "node_id": node_id, "comm_group": comm_group, "graph": graph, "dims": dims, "wafer": wafer, "prec": prec}
+                }
 
             elif row["operation"] == "View":
-                layer_uid = row["uid"]
+                uid = row["uid"]
                 input_dims = list(map(int, row["Dimensions"].split(" -> ")[0][1:-1].split(", ")))
                 output_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
 
-                layer = View(layer_uid, node_id, input_dims, output_dims, graph, prec)
+                layer_attrs[node_id][uid] = {
+                    "type": View, 
+                    "attrs":{"uid": uid, "node_id": node_id, "input_dims": input_dims, "output_dims": output_dims, "graph": graph, "prec": prec}
+                }
 
             elif row["operation"] == "Split":
-                layer_uid = row["uid"]
+                uid = row["uid"]
                 axis = int(row["Dimensions"].split(" -> ")[0])
                 split_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
                 input_dims = list(map(int, row["Dimensions"].split(" -> ")[2][1:-1].split(", ")))
 
-                layer = Split(layer_uid, node_id, axis, split_dims, input_dims, graph, prec)
+                layer_attrs[node_id][uid] = {
+                    "type": Split, 
+                    "attrs":{"uid": uid, "node_id": node_id, "axis": axis, "split_dims": split_dims, "input_dims": input_dims, "graph": graph, "prec": prec}
+                }
 
             elif row["operation"] == "Transpose":
-                layer_uid = row["uid"]
+                uid = row["uid"]
 
                 axes = list(map(int, row["Dimensions"].split(" -> ")[0][1:-1].split(", ")))
                 input_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
                 output_dims = list(map(int, row["Dimensions"].split(" -> ")[2][1:-1].split(", ")))
 
-                layer = Transpose(layer_uid, node_id, axes, input_dims, output_dims, graph, prec)
+                layer_attrs[node_id][uid] = {
+                    "type": Transpose, 
+                    "attrs":{"uid": uid, "node_id": node_id, "axes": axes, "input_dims": input_dims, "output_dims": output_dims, "graph": graph, "prec": prec}
+                }
             
             elif row["operation"] == "Concat":
-                layer_uid = row["uid"]
+                uid = row["uid"]
 
                 axis = int(row["Dimensions"].split(" -> ")[0])
                 concat_dims = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
@@ -187,25 +225,48 @@ def generate_traces(args):
                     input_dim[axis] = d
                     input_dims.append(input_dim)
 
-                layer = Concat(layer_uid, node_id, axis, input_dims, graph, prec)
+                layer_attrs[node_id][uid] = {
+                    "type": Concat, 
+                    "attrs":{"uid": uid, "node_id": node_id, "axis": axis, "input_dims": input_dims, "graph": graph, "prec": prec}
+                }
 
             elif row["operation"] == "Slice":
-                layer_uid = row["uid"]
+                uid = row["uid"]
 
                 input_dims = list(map(int, row["Dimensions"].split(" -> ")[0][1:-1].split(", ")))
                 axis = int(row["Dimensions"].split(" -> ")[1])
                 rng_start, rng_end = map(int, row["Dimensions"].split(" -> ")[2].split(":"))
                 index_rng = (rng_start, rng_end)
 
-                layer = Slice(layer_uid, node_id, axis, index_rng, input_dims, graph, prec)
+                layer_attrs[node_id][uid] = {
+                    "type": Slice, 
+                    "attrs":{"uid": uid, "node_id": node_id, "axis": axis, "index_rng": index_rng, "input_dims": input_dims, "graph": graph, "prec": prec}
+                }
 
             else:
-                layer = None
                 # raise NotImplementedError
                 logging.warning("Operation {} not recognized.".format(row["operation"]))
 
-            if layer:
-                layer.log_stats()
+    # Run layers from the compute graph in a BFS order
+    topo_queue = graph.get_topological_order()
+
+    for node in topo_queue:
+        print(f"Mapping {node.uid} in node_id {node.node_id}")
+
+        if node.op_type in ["root"]:
+            continue
+
+        node_id = node.node_id
+        uid = node.uid
+
+        if uid not in layer_attrs[node_id]:
+            continue
+
+        layer_class = layer_attrs[node_id][uid]["type"]
+        layer_params = layer_attrs[node_id][uid]["attrs"]
+
+        layer = layer_class(**layer_params)
+        layer.log_stats()
 
     wafer.export_traces(args.iter, "traces/decode")
 

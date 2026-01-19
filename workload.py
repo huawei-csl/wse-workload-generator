@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import logging 
 import json 
 
+np.random.seed(42)
+
 class MoEGateModel:
     def __init__(self, num_experts_per_tok, n_routed_experts, layer_ids, workload_model) -> None:
         self.num_experts_per_tok = num_experts_per_tok

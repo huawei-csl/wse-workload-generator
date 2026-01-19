@@ -19,7 +19,7 @@ class ComputeGraph:
     def dump(self, fname):
         if not os.path.exists(os.path.dirname(fname)):
             os.makedirs(os.path.dirname(fname))
-            
+
         with open(fname, "w") as f:
             fieldnames = ["uid", "op_type", "inputs", "outputs", "attrs"]
             writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")

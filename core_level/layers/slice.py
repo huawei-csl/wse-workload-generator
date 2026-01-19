@@ -33,7 +33,10 @@ class Slice:
             prec=self.prec,
         )
         assert self.input_tensor.tile_size is not None, "Input tensor {} of View operation {} on node {} does not have tile size.".format(self.input_tensor.uid, uid, node_id)
-        assert index_rng[0] % self.input_tensor.tile_size[axis] == 0, "Slice operation supports index range aligned with tile size."
+        
+        
+        if index_rng[1] - index_rng[0] > 1:
+            assert index_rng[0] % self.input_tensor.tile_size[axis] == 0, "Slice operation supports index range aligned with tile size for a range > 1."
 
         new_map = self._remap(self.input_tensor.memory_map)
 
@@ -50,7 +53,7 @@ class Slice:
         self.output_tensor.set_map(new_map, new_tile_size, addr_offset=self.input_tensor.addr_offset)
 
         self.stats = Stats()
-        
+
     def _remap(self, input_map):
         def get_dict_val(dict, ind: List[int]):
             tmp_dict = dict
