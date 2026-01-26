@@ -239,7 +239,7 @@ class MulticastLayer:
 
     def log_stats(self):
         expected = self.calc_expected()
-        self.stats.log_stats(self.uid, self.__class__.__name__, self.uid, expected=expected, dims=self.dims, tile_size=self.tile_size)
+        self.stats.log_stats(self.uid, self.__class__.__name__, self.src, expected=expected, dims=self.dims, tile_size=self.tile_size)
 
 if __name__ == "__main__":
     from core_level.common.wafer import Wafer

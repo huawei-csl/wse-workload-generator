@@ -5,10 +5,14 @@ import os
 
 from utils import byte_to_str, mac_to_str
 
-class RuntimeStats:
-    def __init__(self):
-        self.iter = None
-        self.stats = {}
+class NodeStats:
+    def __init__(self, iter=None):
+        if iter:
+            self.iter = iter
+            self.stats[iter] = {}
+        else:
+            self.iter = None
+            self.stats = {}
 
     def new_iter(self, iter_id):
         self.iter = iter_id
@@ -24,6 +28,14 @@ class RuntimeStats:
             "comm_group": "N/A" if comm_group is None else comm_group,
             "dims": dims
         }
+
+    def get_stats(self, uid):
+        return self.stats[self.iter][uid]
+
+    def merge(self, other_stats):
+        assert self.iter == other_stats.iter, "Cannot merge stats from different iterations"
+        for uid in other_stats.stats[other_stats.iter]:
+            self.stats[self.iter][uid] = other_stats.stats[other_stats.iter][uid]
 
     def sumUp(self):
         memory_footprint = sum([self.stats[self.iter][uid]["memory_footprint"] for uid in self.stats[self.iter]])

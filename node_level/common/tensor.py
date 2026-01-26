@@ -1,6 +1,5 @@
 
-import compute_graph
-from compute_graph import get_compute_graph
+from node_level.common.compute_graph import get_compute_graph
 import logging
 from typing import List 
 

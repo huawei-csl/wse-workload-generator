@@ -1,7 +1,7 @@
 
 
-from tensor import Tensor
-from compute_graph import reset_compute_graph
+from node_level.common.tensor import Tensor
+from node_level.common.compute_graph import reset_compute_graph
 
 class Generator:
     def __init__(self) -> None:

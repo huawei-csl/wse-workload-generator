@@ -2,15 +2,15 @@
 
 from layers import LlamaDecodeLayer, DSv3DecodeLayer, LMHead
 import logging 
-from stats import RuntimeStats
+from stats import NodeStats
 from utils import intceil, divide_equal
 from workload import get_moe_gate_model
-from compute_graph import get_compute_graph
-from tensor import reset_tensor_registry, Slice
+from node_level.common.compute_graph import get_compute_graph
+from node_level.common.tensor import reset_tensor_registry, Slice
 
 class Model:
     def __init__(self, model_config, dist_info, dtype, out_dir) -> None:
-        self.stats = RuntimeStats()
+        self.stats = NodeStats()
         self.moe_gate_model = None
         self.out_dir = out_dir
         self.dist_info = dist_info

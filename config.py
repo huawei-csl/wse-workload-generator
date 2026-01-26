@@ -105,6 +105,8 @@ class DistInfo:
         return {expert_id: get_bucketid_from_itemid(expert_id, n_experts, self.ep) for expert_id in range(n_experts)}
 
     def batch_mapping(self, bsz):
+        assert bsz >= self.dp_attn and bsz >= self.dp_ffn, "Batch size must be larger than dp_attn and dp_ffn"
+
         self.batch_map = {"attn": {}, "ffn": {}}
 
         for rank_dp_attn in range(self.dp_attn):
@@ -113,7 +115,11 @@ class DistInfo:
         for rank_dp_ffn in range(self.dp_ffn):
             self.batch_map["ffn"].update({batch_id:rank_dp_ffn for batch_id in get_itemids_from_bucketid(rank_dp_ffn, bsz, self.dp_ffn)})
 
-        self.batch_to_shared_exp = {batch_id: self.nearest_shared_expert(batch_id) for batch_id in range(bsz)}
+        # self.batch_to_shared_exp = {batch_id: self.nearest_shared_expert(batch_id) for batch_id in range(bsz)}
+        self.batch_to_shared_exp = {}
+        for batch_id in range(bsz):
+            bucketid = get_bucketid_from_itemid(batch_id, bsz, self.n_redundant_shared_exp)
+            self.batch_to_shared_exp[batch_id] = self.shared_expert_ranks[bucketid]
 
     def get_dp_rank_from_batchids(self, batch_ids, layer_type):
         assert layer_type in ["attn", "ffn"], "layer_type must be either 'attn' or 'ffn'"
@@ -130,18 +136,18 @@ class DistInfo:
         dp_cluster = [k for k,v in self.global_cfg.ranks["dp_"+layer_type].items() if v == dp_rank]
         return dp_cluster[0]
 
-    def nearest_shared_expert(self, batch_id):
-        batch_dp_rank = self.batch_map["attn"][batch_id]
-        master_dp_rank = self.get_dp_master(batch_dp_rank, "attn")
+    # def nearest_shared_expert(self, batch_id):
+    #     batch_dp_rank = self.batch_map["attn"][batch_id]
+    #     master_dp_rank = self.get_dp_master(batch_dp_rank, "attn")
 
-        nearest_node = self.shared_expert_ranks[0]
+    #     nearest_node = self.shared_expert_ranks[0]
+    #     dp_cluster_size = len(self.dp_attn_cluster)
 
-        for shared_exp_rank in self.shared_expert_ranks[1:]:
-            if shared_exp_rank > master_dp_rank:
-                break
-            nearest_node = shared_exp_rank
+    #     for shared_exp_rank in self.shared_expert_ranks[1:]:
+    #         if shared_exp_rank < master_dp_rank + dp_cluster_size:
+    #             nearest_node = shared_exp_rank
 
-        return nearest_node
+    #     return nearest_node
 
 class SystemConfig:
     def __init__(self) -> None:
@@ -181,7 +187,22 @@ class SystemConfig:
                          .format(rank, self.ranks["pp"][rank], self.ranks["dp_ffn"][rank], self.ranks["ep"][rank], self.ranks["tp_ffn"][rank],
                                  ffn_comm_groups["pp"][rank], ffn_comm_groups["dp_ffn"][rank], ffn_comm_groups["ep"][rank], ffn_comm_groups["tp_ffn"][rank]))
 
-    def from_args(self, num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, n_redundant_shared_exp, expert_workload_model, moe_comm):
+    def from_args(self, 
+                  num_nodes: int = 1, 
+                  dp_attn: int = 1, 
+                  dp_ffn: int = 1, 
+                  tp_attn: int = 1, 
+                  tp_ffn: int = 1, 
+                  pp: int = 1, 
+                  sp: int = 1, 
+                  ep: int = 1, 
+                  n_redundant_shared_exp: int = 1, 
+                  expert_workload_model: str = "empirical_mmlu", 
+                  moe_comm: str = "multicast"):
+        
+        assert expert_workload_model in ["identical", "uniform", "empirical_mmlu"], "expert_workload_model must be one of ['identical', 'uniform', 'empirical_mmlu']"
+        assert moe_comm in ["alltoall", "multicast"], "moe_comm must be one of ['alltoall', 'multicast']"
+
         self.num_nodes = num_nodes
         self.dp_attn = dp_attn
         self.dp_ffn = dp_ffn

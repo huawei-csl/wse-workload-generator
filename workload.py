@@ -89,6 +89,10 @@ def get_moe_gate_model(num_experts_per_tok = None, n_routed_experts = None, laye
         moe_gate_model = MoEGateModel(num_experts_per_tok, n_routed_experts, layer_ids, workload_model)
     return moe_gate_model
 
+def reset_moe_gate_model():
+    global moe_gate_model
+    moe_gate_model = None
+
 if __name__=="__main__":
     layer = "layer0"
     moe_gate = MoEGateModel(8, 256, [layer], workload_model="uniform")
