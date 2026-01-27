@@ -3,10 +3,10 @@ import shutil
 import logging 
 import matplotlib.pyplot as plt
 
-from core_level.layers.linear import LinearLayer
-from core_level.common.wafer import Wafer
-from core_level.common.graph import Graph
-from core_level.common.isa import InstructionSet
+from src.core_level.layers.linear import LinearLayer
+from src.core_level.common.wafer import Wafer
+from src.core_level.common.graph import Graph
+from src.core_level.common.isa import InstructionSet
 
 from visualize.draw_wafer import DrawWafer
 

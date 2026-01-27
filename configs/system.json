@@ -17,16 +17,16 @@
     },
     "decode": 
     {
-        "num_nodes": 16,
-        "node_grid": [4,4],
+        "num_nodes": 56,
+        "node_grid": [7,8],
         "core_grid": [6,6],
-        "dp_attn": 4,
+        "dp_attn": 7,
         "dp_ffn": 1,
-        "tp_attn": 4,
+        "tp_attn": 1,
         "tp_ffn": 1,
         "pp": 1,
-        "sp": 1,
-        "ep": 16,
+        "sp": 8,
+        "ep": 56,
         "n_redundant_shared_exp": 1,
         "expert_workload_model": "empirical_mmlu",
         "moe_comm": "multicast"

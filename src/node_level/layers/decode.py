@@ -92,8 +92,9 @@ class DSv3DecodeLayer:
 
         x = self.attention.forward(x, ctx_len, stats=stats)
 
-        self.ffn.forward(x, stats=stats)
+        x = self.ffn.forward(x, stats=stats)
 
+        return x
         return Tensor(self.layer_id+"_out", self.dist_info.rank, x.dims)
 
     def memory_footprint(self, bsz, ctx_len):

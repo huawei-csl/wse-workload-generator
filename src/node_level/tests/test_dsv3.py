@@ -62,7 +62,7 @@ def test_dsv3(bsz, dp_attn, tp_attn, sp, prefill_len, decode_len, dtype):
     with open("configs/deepseekv3.json", "r") as f:
         model_config = json.load(f) 
 
-    init_logger(level=logging.ERROR)
+    init_logger(level=logging.ERROR, path='logs/test.log')
 
     num_nodes = dp_attn * tp_attn * sp
     tp_attn = tp_attn

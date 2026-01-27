@@ -98,12 +98,13 @@ class MLAAbsorbBlock:
         q = Concat([q_nope, q_pe], axis=-1).forward(stats=self._stats)
 
         attn_out = self.ops["absorb_attn"].forward(q, ctx_len, stats=self._stats)
-        attn_out = Transpose(attn_out, [0, 2]).forward(stats=self._stats)
 
         if self.dist_info.sp > 1:
             attn_out = View(attn_out, [local_bsz, seqlen, self.n_local_heads*self.kv_lora_rank]).forward(stats=self._stats)
             attn_out = self.ops["allreduce_sp"].forward(attn_out, stats=self._stats)
             attn_out = View(attn_out, [local_bsz, seqlen, self.n_local_heads, self.kv_lora_rank]).forward(stats=self._stats)
+
+        attn_out = Transpose(attn_out, [0, 2]).forward(stats=self._stats)
 
         attn_out = View(attn_out, [self.n_local_heads, local_bsz*seqlen, self.kv_lora_rank]).forward(stats=self._stats)
         x = self.ops["wkv_b2"].forward(attn_out, stats=self._stats)

@@ -44,7 +44,7 @@ def test_llama():
     with open("configs/llama3.json", "r") as f:
         model_config = json.load(f) 
 
-    init_logger(level=logging.ERROR)
+    init_logger(level=logging.ERROR, path='logs/test.log')
 
     gt = run(model_config)
     
@@ -72,7 +72,7 @@ def test_deepseek():
     with open("configs/deepseekv3.json", "r") as f:
         model_config = json.load(f) 
 
-    init_logger(level=logging.ERROR)
+    init_logger(level=logging.ERROR, path='logs/test.log')
 
     gt = run(model_config)
     

@@ -48,7 +48,7 @@ python src/generate_nodes.py --help
 
 4) Run the core-level trace generator
 ```
-python core_level/generate_traces.py --layers decode5 --iter decode0 --dtype fp16
+python src/generate_traces.py --layers decode5 --iter decode0 --dtype fp16
 ```
 The trace generator will generate core-level traces under **./traces**
 

@@ -2,9 +2,9 @@
 import logging 
 import sys
 
-def init_logger(level):
+def init_logger(level, path):
     logging.basicConfig(
-        filename='out.log',
+        filename=path,
         level=level,
         filemode="w",
         format='[%(asctime)s] {%(filename)s:%(lineno)d} %(levelname)s - %(message)s'

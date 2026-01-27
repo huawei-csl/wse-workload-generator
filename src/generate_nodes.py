@@ -44,7 +44,7 @@ if __name__=="__main__":
         model_config = json.load(f) 
         logging.info(model_config)
 
-    init_logger(level=args.log.upper())
+    init_logger(level=args.log.upper(), path='logs/generate_nodes.log')
 
     out_dir = os.path.abspath(args.outdir)
     assert out_dir not in [".", "..", "./", "/", "//"], "out_dir seems to be not safe"
