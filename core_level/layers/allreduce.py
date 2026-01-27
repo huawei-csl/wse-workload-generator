@@ -9,7 +9,7 @@ from core_level.common.stats import Stats
 from core_level.layers.barrier import Barrier
 from core_level.layers.reduce import TileReduceOp
 
-from utils import byte_to_str, dtype_to_byte
+from src.node_level.common.utils import byte_to_str, dtype_to_byte
 
 class TileAllreduceStage1Op:
     def __init__(self, id, send0_tile, next_tile, comm_group) -> None:

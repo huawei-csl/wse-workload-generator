@@ -2,7 +2,7 @@
 import logging
 
 from typing import List
-from utils import dtype_to_byte
+from src.node_level.common.utils import dtype_to_byte
 import itertools
 
 from core_level.common.stats import Stats

@@ -1,9 +1,9 @@
 __pycache__
-out/
+output/
 out.log
 .vscode/launch.json
 traces
-out_graph
 .vscode/launch.json
 *.egg-info
 wafer.png
+logs

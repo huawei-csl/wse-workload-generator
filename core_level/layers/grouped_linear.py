@@ -9,7 +9,7 @@ from core_level.common.wafer import Core
 from core_level.layers.reduce import TileReduceOp
 from core_level.common.isa import InstructionSet
 from core_level.common.stats import Stats
-from utils import dtype_to_byte
+from src.node_level.common.utils import dtype_to_byte
 
 class TileGroupGemmOp:
     def __init__(self, id, input_tile, weight_tile, out_tile) -> None:

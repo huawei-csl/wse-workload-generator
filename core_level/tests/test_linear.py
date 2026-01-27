@@ -1,6 +1,6 @@
 import logging 
 import pytest
-from utils import byte_to_str
+from src.node_level.common.utils import byte_to_str
 
 from core_level.layers.linear import LinearLayer
 from core_level.common.wafer import Wafer

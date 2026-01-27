@@ -20,8 +20,8 @@ Modelled layers:
 4) Alltoall
 
 Supported architectures:
-1) Llama GQA
-2) DeepSeekv3
+1) DeepSeekv3
+2) Llama GQA (in progress)
 
 Install:
 ```
@@ -31,10 +31,10 @@ pip install -e .
 To run the simulation:
 1) Make sure the config.json (downloaded from HF) for the target model is stored under configs/
 2) Enter system properties in system.json
-3) Run main.py with the desired arguments. For example:   
+3) Run src/generate_nodes.py with the desired arguments. For example:   
 
 ```
-python main.py --model_config configs/deepseekv3.json --system_config configs/system.json --bsz 1024 --prefill_len 2048 --decode_len 10 --only_decode 1 --simplified_decode 1 --dtype fp16
+python src/generate_nodes.py --model_config configs/deepseekv3.json --system_config configs/system.json --bsz 1024 --prefill_len 2048 --decode_len 10 --only_decode 1 --simplified_decode 1 --dtype fp16
 ```
 
 The tool will generate various system requirements (i.e., **# of flops, memory reads, network requirements**) for each node and for each inference step (prefill + decode) as csv files under **out/**
@@ -43,7 +43,7 @@ The logs are written to **./out.log**
 
 For argument descriptions, run:
 ```
-python main.py --help
+python src/generate_nodes.py --help
 ```
 
 4) Run the core-level trace generator

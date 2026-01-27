@@ -1,7 +1,7 @@
 import json
 import logging 
 from typing import List
-from utils import dtype_to_byte
+from src.node_level.common.utils import dtype_to_byte
 
 class Tile:
     def __init__(self, id, parent, indices, prec) -> None:

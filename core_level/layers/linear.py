@@ -1,7 +1,7 @@
 import logging
 from typing import List
 
-from utils import dtype_to_byte
+from src.node_level.common.utils import dtype_to_byte
 
 from core_level.common.wafer import Core
 from core_level.layers.reduce import TileReduceOp

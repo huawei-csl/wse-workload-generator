@@ -4,9 +4,9 @@ import shutil
 import json 
 
 import logging
-from logger import init_logger
+from src.node_level.common.logger import init_logger
 
-from utils import byte_to_str
+from src.node_level.common.utils import byte_to_str
 
 from core_level.common import Wafer
 from core_level.layers import LinearLayer, GroupedLinearLayer, MLALayer, UnicastLayer, MulticastLayer, AllreduceLayer

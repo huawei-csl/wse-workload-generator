@@ -4,8 +4,8 @@ from copy import deepcopy
 from typing import List 
 
 from core_level.common.tile import Tile
-from utils import dtype_to_byte
-from utils import intceil
+from src.node_level.common.utils import dtype_to_byte
+from src.node_level.common.utils import intceil
 
 def reset_tensor_registry():
     TensorRegistry.reset()

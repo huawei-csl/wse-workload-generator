@@ -8,7 +8,7 @@ from core_level.common.wafer import Core
 from core_level.layers.reduce import TileReduceOp
 from core_level.common.isa import InstructionSet
 from core_level.common.stats import Stats
-from utils import byte_to_str, dtype_to_byte
+from src.node_level.common.utils import byte_to_str, dtype_to_byte
 
 class TileAttnOp:
     def __init__(self, id, q_tile, kv_tile, out_tile) -> None:

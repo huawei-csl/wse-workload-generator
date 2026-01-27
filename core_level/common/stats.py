@@ -1,7 +1,7 @@
 import logging 
 import numpy as np
 
-from utils import byte_to_str, flops_to_str
+from src.node_level.common.utils import byte_to_str, flops_to_str
 
 class Stats:
     def __init__(self, core_ids=None):
