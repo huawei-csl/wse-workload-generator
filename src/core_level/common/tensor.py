@@ -1,7 +1,4 @@
 import logging 
-import itertools
-from copy import deepcopy
-from typing import List 
 
 from src.core_level.common.tile import Tile
 from src.node_level.common.utils import dtype_to_byte
@@ -202,6 +199,13 @@ class Tensor:
     def set_map(self, memory_map, tile_size, addr_offset=None):
         assert self.memory_map is None, "Tensor {} is already mapped to memory.".format(self.uid)
         assert self.tile_size is None, "Tensor {} already has tile_size {}".format(self.uid, self.tile_size)
+        
+        i = 0
+        tmp_map = memory_map
+        while i < self.n_dims:
+            assert len(tmp_map) == intceil(self.dims[i]/tile_size[i]), "Memory map size does not match tensor dimensions and tile size."
+            tmp_map = tmp_map[0]
+            i += 1
 
         if addr_offset is None:
             self.addr_offset = 0
@@ -211,6 +215,9 @@ class Tensor:
         self.memory_map = memory_map
         self.tile_size = list(tile_size)
         assert len(self.tile_size) == self.n_dims, "Tile size dimensions do not match tensor dimensions."
+
+        
+
 
     '''
     Calculate the physical banks and memory sizes for a given index range.
@@ -515,5 +522,5 @@ if __name__=="__main__":
 
     addr_offset = 0
 
-    tensor_a = Tensor("A", dims, "fp16")
+    tensor_a = Tensor(f"{node_id}:A", dims, "fp16")
     tensor_a.map_to_memory(wafer.banks[node_id], tile_size, addr_offset=addr_offset)

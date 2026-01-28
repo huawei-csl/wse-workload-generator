@@ -5,6 +5,7 @@ from typing import List
 
 from src.core_level.common.tensor import Tensor
 from src.core_level.common.stats import Stats
+from src.core_level.layers.remap import Remap
 
 class Concat:
     def __init__(self, uid, node_id, axis, input_dims, graph, prec) -> None:
@@ -38,7 +39,15 @@ class Concat:
             assert input_tensor.tile_size is not None, "Input tensor {} of Concat operation {} on node {} does not have tile size.".format(input_tensor.uid, uid, node_id)
             self.input_tensors.append(input_tensor)
         
+        min_tile_size = list(self.input_tensors[0].tile_size)
         for i in range(1, len(self.input_tensors)):
+            min_tile_size = [min(min_tile_size[d], self.input_tensors[i].tile_size[d]) for d in range(len(input_dims[0]))]
+
+        for i in range(0, len(self.input_tensors)):
+            if self.input_tensors[i].tile_size != min_tile_size:
+                self.input_tensors[i] = Remap(self.uid + "_remap", node_id, self.input_tensors[i], min_tile_size, wafer=None, prec=self.prec).get_output()
+
+        for i in range(0, len(self.input_tensors)):
             assert self.input_tensors[0].tile_size == self.input_tensors[i].tile_size, "Concat operation {} on node {} requires input tensors to have the same tile size.".format(uid, node_id)
 
         self.output_dims = deepcopy(input_dims[0])

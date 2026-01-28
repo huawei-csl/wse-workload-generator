@@ -82,8 +82,9 @@ def generate_traces(args):
 
                 dims = (M, K, N)
                 
-                tile_size = load_tiling_config("configs/tiling.json", "Linear", dims, uid)
-
+                # tile_size = load_tiling_config("configs/tiling.json", "Linear", dims, uid)
+                tile_size = None 
+                
                 layer_attrs[node_id][uid] = {
                     "type": LinearLayer, 
                     "attrs":{"uid": uid, "node_id": node_id, "graph": graph, "dims": dims, "tile_size": tile_size, "wafer": wafer, "prec": prec}
@@ -110,10 +111,12 @@ def generate_traces(args):
                 assert int(out_dims[1]) == M, "M dimension mismatch."
                 B, M, N = int(out_dims[0]), int(out_dims[1]), int(out_dims[2])
 
+                tile_size = None 
+                
                 dims = (B, M, K, N)
                 layer_attrs[node_id][uid] = {
                     "type": GroupedLinearLayer, 
-                    "attrs":{"uid": uid, "node_id": node_id, "graph": graph, "dims": dims, "wafer": wafer, "prec": prec}
+                    "attrs":{"uid": uid, "node_id": node_id, "graph": graph, "dims": dims, "tile_size": tile_size, "wafer": wafer, "prec": prec}
                 }
 
             elif row["operation"] == "MLAAbsorbAttention":

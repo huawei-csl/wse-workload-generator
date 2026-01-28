@@ -12,6 +12,7 @@ from src.core_level.common.graph import Graph
         ([8, 64, 8], [8, 64, 1, 8], [4, 4, 4]), # unsqueeze test
         ([8, 64, 8], [8, 4, 16, 8], [4, 4, 4]), # split dim test
         ([8, 64, 8], [8, 16, 4, 8], [4, 4, 4]), # split dim test
+        ([8, 64, 8], [8, 16, 4, 8], [4, 32, 4]), # tile dim > new dim
     ]
 )
 def test_view_split(input_dims, output_dims, tile_size):
@@ -104,3 +105,7 @@ def test_view_merge(input_dims, output_dims, tile_size):
                     out2 = layer.output_tensor.get_physical_address([(e0, e0+1), (e1, e1+1), (e2, e2+1)])
                     
                     assert out1 == out2, "Mapping mismatch for input index ({},{},{},{}) vs output index ({},{},{}). Got {} vs {}.".format(d0, d1, d2, d3, e0, e1, e2, out1, out2)
+
+
+if __name__=="__main__":
+    test_view_split([64], [16, 4], [32])

@@ -4,6 +4,8 @@ from typing import List
 
 from src.core_level.common.tensor import Tensor
 from src.core_level.common.stats import Stats
+from src.core_level.layers.remap import Remap
+from src.node_level.common.utils import intceil
 
 class View:
     def __init__(self, uid, node_id, input_dims, output_dims, graph, prec) -> None:
@@ -39,15 +41,26 @@ class View:
         )
         assert self.input_tensor.tile_size is not None, "Input tensor {} of View operation {} on node {} does not have tile size.".format(self.input_tensor.uid, uid, node_id)
 
+        input_tile_size = self.input_tensor.tile_size
         if self.view_type == "split":
             # When one dim is split into two, the new tile size is 1 for the new dim.
-            new_tile_size = self.input_tensor.tile_size[:first] + [1, self.input_tensor.tile_size[first]] + self.input_tensor.tile_size[first+1:]
+            new_tile_size = input_tile_size[:first] + [1, input_tile_size[first]] + input_tile_size[first+1:]
+            if input_tile_size[first] > output_dims[first+1]:
+                remap_tile_size = list(input_tile_size)
+                remap_tile_size[first] = output_dims[first+1]
+                self.input_tensor = Remap(self.uid + "_remap", node_id, self.input_tensor, remap_tile_size, wafer=None, prec=self.prec).get_output()
+
+                new_tile_size[first+1] = output_dims[first+1]
         else:
             # When two dims are merged, take the tile size of the second dim.
-            new_tile_size = self.input_tensor.tile_size[:first] + [self.input_tensor.tile_size[first+1]] + self.input_tensor.tile_size[first+2:]
+            new_tile_size = input_tile_size[:first] + [input_tile_size[first+1]] + input_tile_size[first+2:]
 
-        for d in range(len(self.output_dims)):
-            assert self.output_dims[d] >= new_tile_size[d], "We do not support View operation with tile size larger than dimension size yet. View operation {} on node {} has output_dims {} with tile size {}.".format(uid, node_id, self.output_dims, new_tile_size)
+        # for d in range(len(self.output_dims)):
+        #     if new_tile_size[d] > self.output_dims[d]:
+        #         new_tile_size[d] = self.output_dims[d]
+            
+        # if new_tile_size != list(self.input_tensor.tile_size):
+        #     self.input_tensor = Remap(self.uid + "_remap", node_id, self.input_tensor, new_tile_size, wafer=None, prec=self.prec).get_output()
 
         if self.view_type == "split":
             new_map = self._remap_split(self.input_tensor.memory_map, new_tile_size, first)
@@ -168,6 +181,19 @@ class View:
             )
 
             logging.debug(f"Tile ind {old_ind} is mapped to {new_ind}.")
+
+        tmp_map = new_map
+        n_indices = 1
+        for i in range(len(self.output_dims)):
+            tmp_map = tmp_map[0]
+            n_indices *= len(tmp_map)
+
+        tmp_map = new_map
+        n_indices = 1
+        for i in range(len(self.output_dims)):
+            assert len(tmp_map) == intceil(self.output_dims[i]/new_tile_size[i]), "Memory map size does not match tensor dimensions and tile size."
+            tmp_map = tmp_map[0]
+            n_indices *= len(tmp_map)
 
         return new_map
 

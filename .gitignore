@@ -6,4 +6,5 @@ traces
 .vscode/launch.json
 *.egg-info
 wafer.png
+autotile.png
 logs

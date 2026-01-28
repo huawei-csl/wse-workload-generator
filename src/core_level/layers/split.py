@@ -5,6 +5,7 @@ from typing import List
 
 from src.core_level.common.tensor import Tensor
 from src.core_level.common.stats import Stats
+from src.core_level.layers.remap import Remap
 
 class Split:
     def __init__(self, uid, node_id, axis, split_dims, input_dims, graph, prec) -> None:
@@ -32,6 +33,11 @@ class Split:
             prec=self.prec,
         )
         assert self.input_tensor.tile_size is not None, "Input tensor {} of View operation {} on node {} does not have tile size.".format(self.input_tensor.uid, uid, node_id)
+
+        if self.input_tensor.tile_size[axis] > split_dims[0] or self.input_tensor.tile_size[axis] > split_dims[1]:
+            new_tile_size = list(self.input_tensor.tile_size)
+            new_tile_size[axis] = min(split_dims)
+            self.input_tensor = Remap(self.uid + "_remap", node_id, self.input_tensor, new_tile_size, wafer=None, prec=self.prec).get_output()
 
         assert split_dims[0] % self.input_tensor.tile_size[axis] == 0 and split_dims[1] % self.input_tensor.tile_size[axis] == 0, "We do not support Split operation with tile size larger than dimension size yet. Split operation {} on node {} has input_dims {} with tile size {}.".format(uid, node_id, input_dims, self.input_tensor.tile_size)
 

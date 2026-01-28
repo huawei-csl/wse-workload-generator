@@ -32,6 +32,13 @@ from src.core_level.common.tensor import reset_tensor_registry
             [32, 32, 32], 
             [16, 16, 16], 
         ),
+        # auto-tile
+        (
+            [4, 4], 
+            [4, 4],
+            [128, 128, 128], 
+            None, 
+        ),        
     ]
 )
 def test_linear(node_grid, core_grid, dims, tile_size):

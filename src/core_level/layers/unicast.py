@@ -90,7 +90,6 @@ class UnicastLayer:
 
         self.map_ops()
 
-
     def create_tiles(self):
         # self.output_tensor.map_to_memory(self.wafer.banks[self.dst], tile_size=self.tile_size, addr_offset=0)
         self.output_tensor.set_map(self.input_tensor.memory_map, self.tile_size)

@@ -1,5 +1,8 @@
 import json
 import logging
+import matplotlib.pyplot as plt
+import itertools
+
 from typing import List
 
 from src.core_level.common.graph import get_compute_graph
@@ -9,7 +12,7 @@ from src.core_level.common.wafer import Core
 from src.core_level.layers.reduce import TileReduceOp
 from src.core_level.common.isa import InstructionSet
 from src.core_level.common.stats import Stats
-from src.node_level.common.utils import dtype_to_byte
+from src.node_level.common.utils import dtype_to_byte, intceil
 
 class TileGroupGemmOp:
     def __init__(self, id, input_tile, weight_tile, out_tile) -> None:
@@ -75,14 +78,18 @@ class GroupedLinearLayer:
         banks: list of MemoryBank objects available for mapping tiles
         prec: precision of the data (e.g., "fp16", "fp8")
     '''
-    def __init__(self, uid, node_id, graph, dims, wafer, prec) -> None:
+    def __init__(self, uid, node_id, graph, dims, tile_size, wafer, prec) -> None:
         assert len(dims) == 4, "dims should be a tuple of (B, M, K, N)"
         self.uid = uid
         self.node_id = node_id
         self.dims = dims
         self.wafer = wafer
 
-        self.tile_size = load_tiling_config("configs/tiling.json", "GroupedLinear", self.dims)
+        if tile_size:
+            self.tile_size = tile_size
+        else:
+            self.tile_size = self.autotile()
+        
         self.prec = prec
         
         self.graph_op = graph.get_op(node_id, uid)
@@ -219,6 +226,57 @@ class GroupedLinearLayer:
                                                         self.out_tiles[b][m][n]
                                                     )
 
+
+    def autotile(self, plot_tiling_dse=False):
+        B, M, K, N = self.dims
+
+        rngs = [range(6) for dim in self.dims]
+
+        estimates = {}
+        min_cost = float("inf")
+        min_cost_tile = None
+        for scales in itertools.product(*rngs):
+            Tb, Tm, Tk, Tn = intceil(B / 2**scales[0]), intceil(M / 2**scales[1]), intceil(K / 2**scales[2]), intceil(N / 2**scales[3])
+            
+            num_tile_ops = intceil(B / Tb) * intceil(M / Tm) * intceil(K / Tk) * intceil(N / Tn)
+
+            avg_load = num_tile_ops / self.wafer.num_cores_per_node
+            max_load = intceil(num_tile_ops / self.wafer.num_cores_per_node)
+            core_occupancy = avg_load / max_load
+
+            est_memory_access = intceil(M / Tm) * K * N + intceil(N / Tn) * M * K + (2*intceil(K / Tk) + 1) * M * N
+            ideal_memory_access = M * K +  K * N + M * N
+            mem_overhead = est_memory_access / ideal_memory_access
+
+            cost = mem_overhead * 1/core_occupancy
+            if cost < min_cost:
+                min_cost = cost
+                min_cost_tile = (Tb, Tm, Tk, Tn)
+
+            if plot_tiling_dse:
+                print("Trying tile size: ", Tb, Tm, Tk, Tn)
+                print("Estimated core occupancy: {:.2f}".format(core_occupancy))
+                print("Estimated memory access overhead: {:.2f}x".format(mem_overhead))
+                print("Estimated cost: {:.2f}".format(cost))
+            
+            estimates[(Tb, Tm, Tk, Tn)] = (core_occupancy, mem_overhead, cost)
+
+        assert min_cost_tile is not None, "Failed to find valid tile size."
+
+        if plot_tiling_dse:
+            plt.figure(figsize=(10, 6))
+            plt.plot(
+                [estimates[key][1] for key in estimates],
+                [estimates[key][0] for key in estimates],
+                'o'
+            )
+            plt.scatter(estimates[min_cost_tile][1], estimates[min_cost_tile][0], s=100, color='red')
+            plt.savefig("autotile.png".format(self.uid.replace(":", "_")))
+
+            print("Found optimal tile size: Tb={}, Tm={}, Tk={}, Tn={} with cost {:.2f}, occupancy {:.2f}, memory overhead {:.2f}".format(min_cost_tile[0], min_cost_tile[1], min_cost_tile[2], min_cost_tile[3], min_cost, estimates[min_cost_tile][0], estimates[min_cost_tile][1]))
+        
+        return min_cost_tile
+
     def map_ops(self):
         for b in self.tile_ops:
             for m in self.tile_ops[b]:
@@ -260,3 +318,42 @@ class GroupedLinearLayer:
     def log_stats(self):
         expected = self.calc_expected()
         self.stats.log_stats(self.uid, self.__class__.__name__, self.node_id, expected=expected, dims=self.dims, tile_size=self.tile_size)
+
+
+if __name__ == "__main__":
+    from src.core_level.common.wafer import Wafer
+    from src.core_level.common.tensor import reset_tensor_registry
+    from src.core_level.common.graph import Graph
+
+    reset_tensor_registry()
+
+    node_grid = (1, 1)
+    core_grid = (4, 4)
+
+    wafer = Wafer(node_grid, core_grid)
+
+    ops = {}
+    for node_id in range(wafer.num_nodes):
+        ops[node_id] = {}
+        op_id = f"{node_id}:linear_0"
+        ops[node_id][op_id] = {
+            "type": "Linear",
+            "inputs": [f"{node_id}:input_tensor"],
+            "outputs": [f"{node_id}:output_tensor"]
+        }
+    
+    graph = Graph(iter=0, num_nodes=wafer.num_nodes, ops=ops)
+
+    dims = [128, 147, 128, 512]
+    tile_size = None
+
+    node_id = 0
+
+    input_tensor = Tensor(
+        uid=f"{node_id}:input_tensor",
+        dims=[dims[0], dims[1], dims[2]],
+        prec="fp16",
+    )
+    layer = GroupedLinearLayer(f"{node_id}:linear_0", node_id, graph, dims, tile_size, wafer, prec="fp16")
+    layer.autotile(plot_tiling_dse=True)
+    layer.log_stats()

@@ -1,4 +1,8 @@
 import logging
+import numpy as np
+import matplotlib.pyplot as plt
+import itertools
+
 from typing import List
 
 from src.node_level.common.utils import dtype_to_byte
@@ -9,6 +13,8 @@ from src.core_level.layers.reduce import TileReduceOp
 from src.core_level.common.tensor import Tensor
 from src.core_level.common.isa import InstructionSet
 from src.core_level.common.stats import Stats
+
+from src.node_level.common.utils import intceil
 
 class TileGemmOp:
     def __init__(self, id, input_tile, weight_tile, out_tile) -> None:
@@ -76,12 +82,17 @@ class LinearLayer:
         self.uid = uid
         self.node_id = node_id
         self.dims = dims
-        self.tile_size = tile_size
+        
         self.wafer = wafer
         self.prec = prec
 
         self.graph_op = graph.get_op(node_id, uid)
-        
+
+        if tile_size:
+            self.tile_size = tile_size
+        else:
+            self.tile_size = self.autotile()
+
         input_dims = [dims[0], dims[1]]
         self.input_tensor = Tensor(
             uid=self.graph_op["inputs"][0],
@@ -117,6 +128,56 @@ class LinearLayer:
 
         self.map_ops()
 
+    def autotile(self, plot_tiling_dse=False):
+        M, K, N = self.dims
+
+        rngs = [range(6) for dim in self.dims]
+
+        estimates = {}
+        min_cost = float("inf")
+        min_cost_tile = None
+        for scales in itertools.product(*rngs):
+            Tm, Tk, Tn = intceil(M / 2**scales[0]), intceil(K / 2**scales[1]), intceil(N / 2**scales[2])
+
+            num_tile_ops = intceil(M / Tm) * intceil(K / Tk) * intceil(N / Tn)
+
+            avg_load = num_tile_ops / self.wafer.num_cores_per_node
+            max_load = intceil(num_tile_ops / self.wafer.num_cores_per_node)
+            core_occupancy = avg_load / max_load
+
+            est_memory_access = intceil(M / Tm) * K * N + intceil(N / Tn) * M * K + (2*intceil(K / Tk) + 1) * M * N
+            ideal_memory_access = M * K + K * N + M * N
+            mem_overhead = est_memory_access / ideal_memory_access
+
+            cost = mem_overhead * 1/core_occupancy
+            if cost < min_cost:
+                min_cost = cost
+                min_cost_tile = (Tm, Tk, Tn)
+
+            if plot_tiling_dse:
+                print("Trying tile size: ", Tm, Tk, Tn)
+                print("Estimated core occupancy: {:.2f}".format(core_occupancy))
+                print("Estimated memory access overhead: {:.2f}x".format(mem_overhead))
+                print("Estimated cost: {:.2f}".format(cost))
+            
+            estimates[(Tm, Tk, Tn)] = (core_occupancy, mem_overhead, cost)
+
+        assert min_cost_tile is not None, "Failed to find valid tile size."
+
+        if plot_tiling_dse:
+            plt.figure(figsize=(10, 6))
+            plt.plot(
+                [estimates[key][1] for key in estimates],
+                [estimates[key][0] for key in estimates],
+                'o'
+            )
+            plt.scatter(estimates[min_cost_tile][1], estimates[min_cost_tile][0], s=100, color='red')
+            plt.savefig("autotile.png".format(self.uid.replace(":", "_")))
+
+            print("Found optimal tile size: Tm={}, Tk={}, Tn={} with cost {:.2f}, occupancy {:.2f}, memory overhead {:.2f}".format(min_cost_tile[0], min_cost_tile[1], min_cost_tile[2], min_cost, estimates[min_cost_tile][0], estimates[min_cost_tile][1]))
+        
+        return min_cost_tile
+    
     def create_tiles(self):
         """Generate tiling for GEMM operation."""
         M, K, N = self.dims
@@ -258,8 +319,9 @@ if __name__=="__main__":
     
     graph = Graph(iter=0, num_nodes=wafer.num_nodes, ops=ops)
 
-    dims = [8, 4, 2]
-    tile_size = [2, 2, 2]
+    dims = [147, 7168, 576]
+    tile_size = [16, 1024, 64]
+    # tile_size = None
 
     input_tensor = Tensor(
         uid="0:input_tensor",

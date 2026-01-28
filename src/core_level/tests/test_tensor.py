@@ -62,7 +62,7 @@ def test_tensor_memory_layout(tile_size, addr_offset, node_id, dims, ind_rng, ex
 
     reset_tensor_registry()
     
-    tensor_a = Tensor("A", dims, "fp16")
+    tensor_a = Tensor("0:A", dims, "fp16")
     tensor_a.map_to_memory(wafer.banks[node_id], tile_size, addr_offset=addr_offset)
 
     mem_sizes = tensor_a.get_physical_address(ind_rng)
@@ -95,7 +95,7 @@ def test_expand_dims(orig_dims, target_dims, tile_size):
     node_id = 0
     addr_offset = 0
 
-    tensor_a = Tensor("A", orig_dims, "fp16")
+    tensor_a = Tensor("0:A", orig_dims, "fp16")
     tensor_a.map_to_memory(wafer.banks[node_id], tile_size, addr_offset=addr_offset)
     initial_footprint = tensor_a.get_mem_footprint()
     print("dims match? {}, my_dims: {}, target: {}".format(tensor_a.dims_match(target_dims), tensor_a.dims, target_dims))
