@@ -1,8 +1,6 @@
-import logging
 import itertools
-from copy import deepcopy
 
-from typing import List
+from src.node_level.common.utils import get_dict_val, set_dict_val
 
 from src.core_level.common.tensor import Tensor
 from src.core_level.common.stats import Stats
@@ -45,20 +43,6 @@ class Transpose:
         self.stats = Stats()
 
     def remap(self):
-        def get_dict_val(dict, ind: List[int]):
-            tmp_dict = dict
-            for i in ind:
-                tmp_dict = tmp_dict[i]
-            return tmp_dict
-
-        def set_dict_val(dict, ind: List[int], value):
-            tmp_dict = dict
-            for i in ind[:-1]:
-                if i not in tmp_dict:
-                    tmp_dict[i] = {}
-                tmp_dict = tmp_dict[i]
-            tmp_dict[ind[-1]] = value
-
         td0, td1 = self.axes
         new_map = {}
 

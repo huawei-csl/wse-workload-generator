@@ -3,6 +3,7 @@ import itertools
 from copy import deepcopy
 from typing import List
 
+from src.node_level.common.utils import get_dict_val, set_dict_val
 from src.core_level.common.tensor import Tensor
 from src.core_level.common.stats import Stats
 from src.core_level.layers.remap import Remap
@@ -65,20 +66,6 @@ class Split:
         self.stats = Stats()
 
     def _remap(self, input_map):
-        def get_dict_val(dict, ind: List[int]):
-            tmp_dict = dict
-            for i in ind:
-                tmp_dict = tmp_dict[i]
-            return tmp_dict
-
-        def set_dict_val(dict, ind: List[int], value):
-            tmp_dict = dict
-            for i in ind[:-1]:
-                if i not in tmp_dict:
-                    tmp_dict[i] = {}
-                tmp_dict = tmp_dict[i]
-            tmp_dict[ind[-1]] = value
-
         new_map0 = {}
         new_map1 = {}
 

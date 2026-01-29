@@ -49,3 +49,7 @@ def test_slice(index_rng, input_dims, tile_size, axis):
             out1 = tensor_a.get_physical_address([(d, d+1) for d in input_ind])
             out2 = layer.output_tensor.get_physical_address([(e, e+1) for e in output_ind])
             assert out1 == out2, "Mapping mismatch for input index ({}) vs output index ({}). Got {} vs {}.".format(input_ind, output_ind, out1, out2)
+
+
+if __name__=="__main__":
+    test_slice([8, 14], [8, 16, 8], [4, 4, 4], 1)

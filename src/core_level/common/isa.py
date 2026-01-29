@@ -169,7 +169,8 @@ class InstructionSet:
             size = int(parts[-1])
             return ("MULTICAST", src_bank_id, dst_bank_ids, size, comment)
         elif instr_type == "BARRIER":
-            core_ids = list(map(int, parts[1:]))
-            return ("BARRIER", core_ids, comment)
+            # core_ids = list(map(int, parts[1:]))
+            uid = str(parts[1])
+            return ("BARRIER", uid, comment)
         else:
             raise ValueError("Unknown instruction type: {}".format(instr_type)) 

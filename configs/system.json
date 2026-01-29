@@ -22,12 +22,12 @@
         "core_grid": [6,6],
         "dp_attn": 7,
         "dp_ffn": 1,
-        "tp_attn": 1,
+        "tp_attn": 2,
         "tp_ffn": 1,
         "pp": 1,
-        "sp": 8,
+        "sp": 4,
         "ep": 56,
-        "n_redundant_shared_exp": 1,
+        "n_redundant_shared_exp": 7,
         "expert_workload_model": "empirical_mmlu",
         "moe_comm": "multicast"
     }

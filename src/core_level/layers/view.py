@@ -5,7 +5,7 @@ from typing import List
 from src.core_level.common.tensor import Tensor
 from src.core_level.common.stats import Stats
 from src.core_level.layers.remap import Remap
-from src.node_level.common.utils import intceil
+from src.node_level.common.utils import intceil, get_dict_val, set_dict_val
 
 class View:
     def __init__(self, uid, node_id, input_dims, output_dims, graph, prec) -> None:
@@ -77,20 +77,6 @@ class View:
         self.stats = Stats()
 
     def _remap_merge(self, input_map, new_tile_size, first):
-        def get_dict_val(dict, ind: List[int]):
-            tmp_dict = dict
-            for i in ind:
-                tmp_dict = tmp_dict[i]
-            return tmp_dict
-
-        def set_dict_val(dict, ind: List[int], value):
-            tmp_dict = dict
-            for i in ind[:-1]:
-                if i not in tmp_dict:
-                    tmp_dict[i] = {}
-                tmp_dict = tmp_dict[i]
-            tmp_dict[ind[-1]] = value
-
         new_map = {}
 
         tmp_dict = input_map
@@ -134,20 +120,6 @@ class View:
 
 
     def _remap_split(self, input_map, new_tile_size, first):
-        def get_dict_val(dict, ind: List[int]):
-            tmp_dict = dict
-            for i in ind:
-                tmp_dict = tmp_dict[i]
-            return tmp_dict
-
-        def set_dict_val(dict, ind: List[int], value):
-            tmp_dict = dict
-            for i in ind[:-1]:
-                if i not in tmp_dict:
-                    tmp_dict[i] = {}
-                tmp_dict = tmp_dict[i]
-            tmp_dict[ind[-1]] = value
-
         new_rng = self.output_dims[first+1]//new_tile_size[first+1]
         
         new_map = {}

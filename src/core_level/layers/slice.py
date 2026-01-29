@@ -1,7 +1,6 @@
-import logging
 import itertools
-from copy import deepcopy
-from typing import List
+
+from src.node_level.common.utils import get_dict_val, set_dict_val
 
 from src.core_level.common.tensor import Tensor
 from src.core_level.common.stats import Stats
@@ -40,7 +39,7 @@ class Slice:
 
         new_map = self._remap(self.input_tensor.memory_map)
 
-        self.output_dims = deepcopy(input_dims)
+        self.output_dims = list(input_dims)
         self.output_dims[axis] = index_rng[1] - index_rng[0]
         self.output_tensor = Tensor(
             uid=self.graph_op["outputs"][0],
@@ -55,20 +54,6 @@ class Slice:
         self.stats = Stats()
 
     def _remap(self, input_map):
-        def get_dict_val(dict, ind: List[int]):
-            tmp_dict = dict
-            for i in ind:
-                tmp_dict = tmp_dict[i]
-            return tmp_dict
-
-        def set_dict_val(dict, ind: List[int], value):
-            tmp_dict = dict
-            for i in ind[:-1]:
-                if i not in tmp_dict:
-                    tmp_dict[i] = {}
-                tmp_dict = tmp_dict[i]
-            tmp_dict[ind[-1]] = value
-
         start_idx, end_idx = self.index_rng
 
         new_map = {}
@@ -93,12 +78,16 @@ class Slice:
             new_ind = list(old_ind)
             new_ind[self.axis] = old_ind[self.axis] - (start_idx // self.input_tensor.tile_size[self.axis])
             
-            new_range = deepcopy(val["range"])
+            new_range = list(val["range"])
+            # new_range[self.axis] = (
+            #     val["range"][self.axis][0] - start_idx, 
+            #     min(val["range"][self.axis][1] - start_idx, end_idx - start_idx)
+            # )
             new_range[self.axis] = (
-                val["range"][self.axis][0] - start_idx, 
-                min(val["range"][self.axis][1] - start_idx, end_idx - start_idx)
+                0, 
+                end_idx - start_idx
             )
-            
+                        
             set_dict_val(
                 new_map,
                 new_ind,

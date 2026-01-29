@@ -1,7 +1,7 @@
 import itertools
 
 from typing import List
-from src.node_level.common.utils import intceil
+from src.node_level.common.utils import intceil, set_dict_val
 
 from src.core_level.common.tensor import Tensor
 from src.core_level.layers.unicast import TileUnicastOp
@@ -35,20 +35,6 @@ class Remap:
         self.copy()
 
     def copy(self):
-        def get_dict_val(dict, ind: List[int]):
-            tmp_dict = dict
-            for i in ind:
-                tmp_dict = tmp_dict[i]
-            return tmp_dict
-
-        def set_dict_val(dict, ind: List[int], value):
-            tmp_dict = dict
-            for i in ind[:-1]:
-                if i not in tmp_dict:
-                    tmp_dict[i] = {}
-                tmp_dict = tmp_dict[i]
-            tmp_dict[ind[-1]] = value
-
         indices = [list(range(intceil(self.dims[i]/self.new_tile_size[i]))) for i in range(len(self.dims))]
 
         in_map = self.input_tensor.memory_map
@@ -72,23 +58,6 @@ class Remap:
             set_dict_val(out_map, ind, {"range": val["range"], "bank": list(physical_addresses.keys())[0]})
 
         self.output_tensor.set_map(out_map, self.new_tile_size)
-
-        # core_id = 0
-        # for ind in list(itertools.product(*indices)):
-        #     val = get_dict_val(out_map, ind)
-        #     physical_addresses = self.input_tensor.get_physical_address(val["range"])
-
-        #     for src_bank, data_size in physical_addresses.items():
-        #         if src_bank == val["bank"]:
-        #             continue
-                
-        #         in_tile = self.input_tensor.slice(val["range"])
-        #         out_tile = self.output_tensor.slice(val["range"])
-        #         copy_op = TileUnicastOp("{}_unicast_{}_src{}".format(self.uid, "_".join([str(i) for i in ind]), src_bank.bank_id), in_tile, out_tile)
-        #         core = self.wafer.get_core(self.node_id, core_id)
-        #         copy_op.map_to_core(core)
-        #         self.stats.merge(copy_op.stats)
-        #         core_id += 1
 
     def get_output(self):
         return self.output_tensor

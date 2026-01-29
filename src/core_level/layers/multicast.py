@@ -2,7 +2,7 @@
 import logging
 
 from typing import List
-from src.node_level.common.utils import dtype_to_byte
+from src.node_level.common.utils import dtype_to_byte, get_dict_val, set_dict_val
 import itertools
 
 from src.core_level.common.stats import Stats
@@ -166,22 +166,7 @@ class MulticastLayer:
         else:
             raise NotImplementedError("MulticastLayer.create_tiles() only supports 1D, 2D and 3D tensors.")
 
-
     def create_ops(self):
-        def get_dict_val(dict, ind: List[int]):
-            tmp_dict = dict
-            for i in ind:
-                tmp_dict = tmp_dict[i]
-            return tmp_dict
-
-        def set_dict_val(dict, ind: List[int], value):
-            tmp_dict = dict
-            for i in ind[:-1]:
-                if i not in tmp_dict:
-                    tmp_dict[i] = {}
-                tmp_dict = tmp_dict[i]
-            tmp_dict[ind[-1]] = value
-
         indices = []
         tmp_ops = self.in_tiles
         for i in range(len(self.dims)):
@@ -198,25 +183,8 @@ class MulticastLayer:
                 out_tiles
             )
             set_dict_val(self.tile_ops, ind, op)
-                
-        # for i0 in self.in_tiles:
-        #     self.tile_ops[i0] = {}
-        #     for i1 in self.in_tiles[i0]:
-        #         self.tile_ops[i0][i1] = {}
-        #         for i2 in self.in_tiles[i0][i1]:
-        #             self.tile_ops[i0][i1][i2] = TileMulticastOp(
-        #                 "{}_multicast_{}_{}_{}".format(self.uid, i0, i1, i2), 
-        #                 self.in_tiles[i0][i1][i2], 
-        #                 self.out_tiles[i0][i1][i2]
-        #             )
 
-    def map_ops(self):
-        def get_dict_val(dict, ind: List[int]):
-            tmp_dict = dict
-            for i in ind:
-                tmp_dict = tmp_dict[i]
-            return tmp_dict
-        
+    def map_ops(self):        
         dedicated_core = self.wafer.get_core(self.src, 0)
 
         indices = []

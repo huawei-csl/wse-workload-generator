@@ -1,8 +1,8 @@
 import logging 
+import itertools
 
 from src.core_level.common.tile import Tile
-from src.node_level.common.utils import dtype_to_byte
-from src.node_level.common.utils import intceil
+from src.node_level.common.utils import dtype_to_byte, intceil, get_dict_val
 
 def reset_tensor_registry():
     TensorRegistry.reset()
@@ -202,10 +202,18 @@ class Tensor:
         
         i = 0
         tmp_map = memory_map
+        indices = []
         while i < self.n_dims:
+            indices.append(list(tmp_map.keys()))
             assert len(tmp_map) == intceil(self.dims[i]/tile_size[i]), "Memory map size does not match tensor dimensions and tile size."
             tmp_map = tmp_map[0]
             i += 1
+
+        indices = list(itertools.product(*indices))
+        for ind in indices:
+            val = get_dict_val(memory_map, list(ind))
+            for i, (s, e) in enumerate(val["range"]):
+                assert 0 <= s < e <= self.dims[i], "Memory map range out of bounds for tensor {}.".format(self.uid)
 
         if addr_offset is None:
             self.addr_offset = 0
@@ -215,9 +223,6 @@ class Tensor:
         self.memory_map = memory_map
         self.tile_size = list(tile_size)
         assert len(self.tile_size) == self.n_dims, "Tile size dimensions do not match tensor dimensions."
-
-        
-
 
     '''
     Calculate the physical banks and memory sizes for a given index range.
@@ -243,6 +248,7 @@ class Tensor:
                 m_size = len_i * dtype_to_byte(self.prec)
                 mem_sizes[bank] += m_size
 
+            assert eval("*".join(map(str, [e-s for s, e in ind_rng])))*dtype_to_byte(self.prec) == sum(mem_sizes.values()), "Total memory size mismatch for tensor {}.".format(self.uid)
             return mem_sizes
 
         def _get_address_2d(self, ind_rng):
@@ -267,6 +273,7 @@ class Tensor:
                     m_size = len_i * len_j * dtype_to_byte(self.prec) # in bytes
                     mem_sizes[bank] += m_size
 
+            assert eval("*".join(map(str, [e-s for s, e in ind_rng])))*dtype_to_byte(self.prec) == sum(mem_sizes.values()), "Total memory size mismatch for tensor {}.".format(self.uid)
             return mem_sizes
 
         def _get_address_3d(self, ind_rng):
@@ -295,6 +302,8 @@ class Tensor:
                         len_k = min(block_end_k, end_k) - max(block_start_k, start_k)
                         m_size = len_i * len_j * len_k * dtype_to_byte(self.prec)
                         mem_sizes[bank] += m_size
+
+            assert eval("*".join(map(str, [e-s for s, e in ind_rng])))*dtype_to_byte(self.prec) == sum(mem_sizes.values()), "Total memory size mismatch for tensor {}.".format(self.uid)
             return mem_sizes
 
         def _get_address_4d(self, ind_rng):
@@ -330,6 +339,7 @@ class Tensor:
                             m_size = len_i * len_j * len_k * len_l * dtype_to_byte(self.prec)
                             mem_sizes[bank] += m_size
 
+            assert eval("*".join(map(str, [e-s for s, e in ind_rng])))*dtype_to_byte(self.prec) == sum(mem_sizes.values()), "Total memory size mismatch for tensor {}.".format(self.uid)
             return mem_sizes
 
         assert self.memory_map is not None, "Tensor {} is not mapped to memory.".format(self.uid)

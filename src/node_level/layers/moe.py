@@ -52,7 +52,7 @@ class MoE:
 
         self.shared_expert = None
         if self.dist_info.rank in self.dist_info.shared_expert_ranks:
-            self.shared_expert = FFN(uid+"_shared_exp", hidden_size, intermediate_size, dist_info, dtype)
+            self.shared_expert = FFN(uid+"_exp_shared", hidden_size, intermediate_size, dist_info, dtype)
 
     def calc_combine_traffic(self):
         batch_mappings = self.dist_info.batch_map["attn"]
@@ -176,21 +176,6 @@ class MoE:
 
         logging.debug("Total number of routed samples for device {}: {}".format(self.dist_info.rank_ep, total_moe_num_tokens_per_device))
         return exp_outs
-    
-    def forward_compute_shared(self, x, stats):
-        bsz, seqlen, hidden_dim = x.dims
-
-        batch_ids_for_shared = [batch_id for batch_id, mapped_shared in self.dist_info.batch_to_shared_exp.items() if self.dist_info.rank == mapped_shared]
-        concat_uid = self.uid + "_shared_concat_" + hash_string("_".join([str(batch_id) for batch_id in batch_ids_for_shared]))
-        x_for_shared = Concat(
-            [Tensor(x.uid + f"_slice{batch_id}", self.dist_info.rank, [1, seqlen, hidden_dim]) for batch_id in batch_ids_for_shared], 
-            axis=0, 
-            uid=concat_uid).forward(stats=stats)
-
-        out_shared = self.shared_expert.forward(x_for_shared, stats=stats)
-        logging.debug("Shared expert on node {} processed {} samples".format(self.dist_info.rank, len(batch_ids_for_shared)))
-
-        return out_shared
     
     def forward_combine_alltoall(self, exp_outs, stats):
         _, seqlen, hidden_dim = next(iter(exp_outs.values())).dims

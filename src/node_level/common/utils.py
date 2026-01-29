@@ -1,5 +1,6 @@
 
 import math
+from typing import List
 
 def dtype_to_byte(dtype):
     if dtype in ["fp32"]:
@@ -66,6 +67,19 @@ def hash_string(s, num_digits=8):
     import hashlib
     return hashlib.md5(s.encode(), usedforsecurity=False).hexdigest().upper()[:num_digits]
 
+def get_dict_val(dict, ind: List[int]):
+    tmp_dict = dict
+    for i in ind:
+        tmp_dict = tmp_dict[i]
+    return tmp_dict
+
+def set_dict_val(dict, ind: List[int], value):
+    tmp_dict = dict
+    for i in ind[:-1]:
+        if i not in tmp_dict:
+            tmp_dict[i] = {}
+        tmp_dict = tmp_dict[i]
+    tmp_dict[ind[-1]] = value
 
 if __name__=="__main__":
     parts = divide_equal(63, 4)

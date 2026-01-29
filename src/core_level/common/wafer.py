@@ -94,3 +94,22 @@ class Wafer:
                 out_fname = dir_path + "/node_{}/{}/core_{}.csv".format(node_id, iter, core_id)
                 write_to_csv(traces[node_id][core_id], out_fname)
 
+    def load_traces(self, iter: int, dir_path: str, filter_by_uid: str = None):
+        traces = {}
+        for node_id in range(self.num_nodes):
+            traces[node_id] = {}
+            for core_id in range(self.num_cores_per_node):
+                in_fname = dir_path + "/node_{}/{}/core_{}.csv".format(node_id, iter, core_id)
+                if not os.path.exists(in_fname):
+                    logging.warning("Trace file {} does not exist.".format(in_fname))
+                    continue
+
+                with open(in_fname, "r") as f:
+                    trace = f.readlines()
+                    trace = [line.strip() for line in trace]
+
+                    if filter_by_uid:
+                        traces[node_id][core_id] = [line for line in trace if filter_by_uid in line.split(";")[-1]]
+                    else:
+                        traces[node_id][core_id] = trace
+        return traces

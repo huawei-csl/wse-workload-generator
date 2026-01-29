@@ -3,14 +3,19 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import logging 
+
+from src.core_level.common.isa import InstructionSet
+from src.core_level.common.wafer import Wafer
 
 class DrawWafer:
-    def __init__(self, node_grid, core_grid) -> None:
-        self.node_grid = node_grid
-        self.core_grid = core_grid
+    def __init__(self, wafer) -> None:
+        self.wafer = wafer
+        self.node_grid = wafer.node_grid
+        self.core_grid = wafer.core_grid
 
-        self.num_nodes = node_grid[0] * node_grid[1]
-        self.num_cores_per_node = core_grid[0] * core_grid[1]
+        self.num_nodes = self.node_grid[0] * self.node_grid[1]
+        self.num_cores_per_node = self.core_grid[0] * self.core_grid[1]
         self.num_cores = self.num_nodes * self.num_cores_per_node
 
         self.core_width = 0.5 
@@ -23,13 +28,12 @@ class DrawWafer:
 
         self.traffic = {}
 
-        fig_h = 0.5 * node_grid[0] * core_grid[0] * self.core_height
-        fig_w = 0.5 * node_grid[1] * core_grid[1] * (self.core_width + self.bank_width)
+        fig_h = 0.5 * self.node_grid[0] * self.core_grid[0] * self.core_height
+        fig_w = 0.5 * self.node_grid[1] * self.core_grid[1] * (self.core_width + self.bank_width)
         self.figsize = (fig_w, fig_h)
 
         self.fig = plt.figure(figsize=self.figsize)
         self.ax  = self.fig.add_axes([0.1, 0.1, 0.75, 0.8]) # left, bottom, width, height
-        # self.ax = plt.gca()
 
     def draw_wafer(self, with_labels=True):
         ax = self.ax
@@ -125,7 +129,61 @@ class DrawWafer:
             arrowprops=dict(arrowstyle="-", color=color, lw=1, alpha=min(alpha, 1.0)),  # Arrow style
         )
 
+    def draw_traces(self, traces, out_path="visualize/images/image.png"):
+        wafer = self.wafer
+        for node_id in range(wafer.num_nodes):
+            for core_id in range(wafer.num_cores_per_node):
+                for trace in traces[node_id][core_id]:
+                    parsed_instr = InstructionSet.parse(trace)
+                    print(f"{core_id}:", parsed_instr)
+                    if parsed_instr[0] == "READ":
+                        # parsed core/bank ids are global ids, convert to local
+                        src_node = parsed_instr[1] // wafer.num_cores_per_node
+                        src_bank = parsed_instr[1] % wafer.num_cores_per_node
+                        size = parsed_instr[2]
+                        self.register_bank_to_core(src_node, src_bank, node_id, core_id, size)
+                        logging.debug(f"READ from {src_node}:{src_bank} size {size}")
+                    elif parsed_instr[0] == "WRITE":
+                        dst_node = parsed_instr[1] // wafer.num_cores_per_node
+                        dst_bank = parsed_instr[1] % wafer.num_cores_per_node
+                        size = parsed_instr[2] 
+                        self.register_core_to_bank(node_id, core_id, dst_node, dst_bank, size)
+                        logging.debug(f"WRITE to {dst_node}:{dst_bank} size {size}")
+                    elif parsed_instr[0] == "COPY":
+                        src_node = parsed_instr[1] // wafer.num_banks_per_node
+                        assert src_node == node_id, "Source node must be the current node"
+                        src_bank = parsed_instr[1] % wafer.num_banks_per_node
+                        dst_node = parsed_instr[2] // wafer.num_banks_per_node
+                        dst_bank = parsed_instr[2] % wafer.num_banks_per_node
+                        size = parsed_instr[3]
+                        self.register_bank_to_bank(src_node, src_bank, dst_node, dst_bank, size)
+                        logging.debug(f"COPY from {src_node}:{src_bank} to {dst_node}:{dst_bank} size {size}")
+                    elif parsed_instr[0] == "MULTICAST":
+                        src_node = parsed_instr[1] // wafer.num_banks_per_node
+                        assert src_node == node_id, "Source node must be the current node"
+                        src_bank = parsed_instr[1] % wafer.num_banks_per_node
+                        
+                        dsts = []
+                        for dst in parsed_instr[2]:
+                            dst_node = dst // wafer.num_banks_per_node
+                            dst_bank = dst % wafer.num_banks_per_node
+                            dsts.append((dst_node, dst_bank))
+                            size = parsed_instr[3]
+                            self.register_bank_to_bank(src_node, src_bank, dst_node, dst_bank, size)
+                        
+                        logging.debug(f"MULTICAST from {src_node}:{src_bank} to {",".join([f"{dst_node}:{dst_bank}" for dst_node, dst_bank in dsts])} size {size}")
+                    else:
+                        pass
+
+        self.draw_wafer()
+        self.draw_traffic()
+        self.save(out_path)
+
+
     def draw_traffic(self):
+        if len(self.traffic) == 0:
+            return 
+        
         max_traffic = max(list(self.traffic.values()))
 
         for (src, dst), size in self.traffic.items():
@@ -212,12 +270,14 @@ if __name__=="__main__":
     node_grid = (4, 1)
     core_grid = (6, 6)
 
-    wafer = DrawWafer(node_grid, core_grid)
-    
-    wafer.draw_wafer()
-    wafer.register_bank_to_core(1, 3, 2, 8, 256)
-    wafer.register_core_to_bank(0, 30, 0, 15, 256)
-    wafer.register_bank_to_bank(2, 5, 3, 10, 128)
-    wafer.draw_traffic()
+    wafer = Wafer(node_grid, core_grid)
 
-    wafer.save("visualize/images/wafer.png")
+    draw = DrawWafer(wafer)
+    
+    draw.draw_wafer()
+    draw.register_bank_to_core(1, 3, 2, 8, 256)
+    draw.register_core_to_bank(0, 30, 0, 15, 256)
+    draw.register_bank_to_bank(2, 5, 3, 10, 128)
+    draw.draw_traffic()
+
+    draw.save("visualize/images/wafer.png")
