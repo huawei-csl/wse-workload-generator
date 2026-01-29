@@ -1,6 +1,6 @@
 
 import numpy as np
-
+import logging
 
 def get_itemids_from_bucketid(bucket_id, n_items, n_buckets):
     assert bucket_id < n_buckets
@@ -81,7 +81,7 @@ class DistInfo:
 
         # n_redundant_shared_exp is the number of redundant shared expert copies in the system.
         self.n_redundant_shared_exp = n_redundant_shared_exp
-        assert num_nodes % n_redundant_shared_exp == 0, "Number of nodes must be divisible by n_redundant_shared_exp"
+        # assert num_nodes % n_redundant_shared_exp == 0, "Number of nodes must be divisible by n_redundant_shared_exp"
 
         if self.ep == self.num_nodes:
             # each redundant shared expert copy will process samples from a number of nodes that is equal to num_nodes // n_redundant_shared_exp
@@ -118,6 +118,10 @@ class DistInfo:
         for batch_id in range(bsz):
             bucketid = get_bucketid_from_itemid(batch_id, bsz, self.n_redundant_shared_exp)
             self.batch_to_shared_exp[batch_id] = self.shared_expert_ranks[bucketid]
+        
+        for rank in self.shared_expert_ranks:
+            batch_ids = [batch_id for batch_id, shared_expert_rank in self.batch_to_shared_exp.items() if shared_expert_rank == rank]
+            logging.debug("{} samples are mapped to shared expert on rank {}: {}".format(len(batch_ids), rank, batch_ids))
 
     def get_dp_rank_from_batchids(self, batch_ids, layer_type):
         assert layer_type in ["attn", "ffn"], "layer_type must be either 'attn' or 'ffn'"
