@@ -65,7 +65,7 @@ def colored_text(txt, color=None):
 
 def hash_string(s, num_digits=8):
     import hashlib
-    return hashlib.md5(s.encode(), usedforsecurity=False).hexdigest().upper()[:num_digits]
+    return hashlib.md5(s.encode()).hexdigest().upper()[:num_digits]
 
 def get_dict_val(dict, ind: List[int]):
     tmp_dict = dict

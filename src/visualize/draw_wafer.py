@@ -171,7 +171,8 @@ class DrawWafer:
                             size = parsed_instr[3]
                             self.register_bank_to_bank(src_node, src_bank, dst_node, dst_bank, size)
                         
-                        logging.debug(f"MULTICAST from {src_node}:{src_bank} to {",".join([f"{dst_node}:{dst_bank}" for dst_node, dst_bank in dsts])} size {size}")
+                        dsts = ",".join([f"{dst_node}:{dst_bank}" for dst_node, dst_bank in dsts])
+                        logging.debug(f"MULTICAST from {src_node}:{src_bank} to {dsts} size {size}")
                     else:
                         pass
 

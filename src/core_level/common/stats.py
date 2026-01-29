@@ -88,10 +88,10 @@ class Stats:
 
         msg = ""
         msg += f"{uid} {layer_type}"
-        msg += f"\n\tdims: {list(dims) if dims else "N/A"}"
-        msg += f"\ttile_size: {list(tile_size) if tile_size else "N/A"}"
+        msg += f"\n\tdims: {list(dims) if dims else 'N/A'}"
+        msg += f"\ttile_size: {list(tile_size) if tile_size else 'N/A'}"
         msg += f"\n\tEXPECTED: "
-        msg += f"{' '.join(expected_str)}" if expected else "N/A"
+        msg += f"{' '.join(expected_str)}" if expected else 'N/A'
         msg += f"\n\tACTUAL:"
         msg += f"\treads: {byte_to_str(self.get_reads())}"
         msg += f"\twrites: {byte_to_str(self.get_writes())}"
@@ -99,7 +99,7 @@ class Stats:
         msg += f"\tmulticast: {byte_to_str(self.get_multicast())}"
         msg += f"\tcube: {flops_to_str(self.get_total_cube())}"
         msg += f"\tvector: {flops_to_str(self.get_vector())}"
-        msg += f"\n\tmemory_overhead: {((self.get_reads() + self.get_writes()) / (expected["reads"] + expected["writes"] + np.finfo(float).eps) if expected else 0):<.2f}"
+        msg += f"\n\tmemory_overhead: {((self.get_reads() + self.get_writes()) / (expected['reads'] + expected['writes'] + np.finfo(float).eps) if expected else 0):<.2f}"
         msg += f"\tcube_occupancy: {self.get_cube_occupancy():.2f}"
         msg += "\n"
         

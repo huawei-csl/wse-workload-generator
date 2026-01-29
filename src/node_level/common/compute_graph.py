@@ -24,7 +24,7 @@ class ComputeGraph:
             fieldnames = ["uid", "op_type", "inputs", "outputs", "attrs"]
             writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")
             writer.writerows([{"uid":"uid", "op_type":"Op Type", "inputs":"Inputs", "outputs":"Outputs", "attrs":"Attributes"}])
-            writer.writerows([{"uid": uid} | self.nodes[uid] for uid in self.nodes])
+            writer.writerows([{"uid": uid, **self.nodes[uid]} for uid in self.nodes])
 
 compute_graph = None
 

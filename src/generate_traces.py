@@ -24,7 +24,7 @@ def generate_traces(args):
     init_logger(level=args.log.upper(), path='logs/generate_traces.log')
 
     curr_directory = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(curr_directory, "../traces")
+    path = os.path.join(curr_directory, f"{args.outdir}/traces")
     if os.path.exists(path):
         shutil.rmtree(path)
     os.makedirs(path)
@@ -43,7 +43,7 @@ def generate_traces(args):
 
     wafer = Wafer(node_grid, core_grid)
 
-    graph = init_graph(args.iter, wafer.num_nodes, dir="output/graph")
+    graph = init_graph(args.iter, wafer.num_nodes, dir=f"{args.outdir}/graph")
 
     # clear logs
     log_dir = "logs/core_level"
@@ -56,7 +56,7 @@ def generate_traces(args):
     for node_id in range(wafer.num_nodes):
         logging.info("Generating traces for node {}...".format(node_id))
 
-        csv_fname = "output/nodes/decode/node_{}/{}.csv".format(node_id, args.iter)
+        csv_fname = f"{args.outdir}/nodes/decode/node_{node_id}/{args.iter}.csv"
 
         # Load CSV
         data = []
@@ -82,7 +82,6 @@ def generate_traces(args):
 
                 dims = (M, K, N)
                 
-                # tile_size = load_tiling_config("configs/tiling.json", "Linear", dims, uid)
                 tile_size = None 
                 
                 layer_attrs[node_id][uid] = {
@@ -271,7 +270,7 @@ def generate_traces(args):
         layer = layer_class(**layer_params)
         layer.log_stats()
 
-    wafer.export_traces(args.iter, "output/traces/decode")
+    wafer.export_traces(args.iter, f"{args.outdir}/traces/decode")
 
 import argparse
 if __name__=="__main__":
@@ -281,5 +280,6 @@ if __name__=="__main__":
     argparser.add_argument("--iter", type=str, default="decode0", help="which iteration to generate traces for. e.g., 'prefill', 'decode0'")
     argparser.add_argument("--dtype", choices=["fp16", "fp8"], default="fp16", help="numeric precision")
     argparser.add_argument("--log", choices=["debug", "info", "error"], default="info", help="logging level")
+    argparser.add_argument("--outdir", type=str, default="./output", help="directory for generated files")
     args = argparser.parse_args()
     generate_traces(args)

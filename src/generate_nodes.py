@@ -37,7 +37,7 @@ if __name__=="__main__":
     argparser.add_argument("--layers", type=str, default="all", help="layers to simulate, e.g., 'all', 'decode0,decode1,decode2'")
     argparser.add_argument("--dtype", choices=["fp16", "fp8"], default="fp16", help="numeric precision")
     argparser.add_argument("--log", choices=["debug", "info", "error"], default="info", help="logging level")
-    argparser.add_argument("--outdir", type=str, default="./output", help="directory for generated csv files")
+    argparser.add_argument("--outdir", type=str, default="./output", help="directory for generated files")
     args = argparser.parse_args()
 
     with open(args.model_config, "r") as f:

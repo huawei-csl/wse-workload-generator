@@ -52,7 +52,9 @@ class NodeStats:
             fieldnames = ["uid", "operation", "memory_footprint", "num_ops", "hbm_reads", "network_data", "comm_group", "dims"]
             writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")
             writer.writerows([{"uid":"uid", "operation":"operation", "memory_footprint":"memory_footprint (B)", "num_ops":"num_ops (MAC)", "hbm_reads":"hbm_reads (B)", "network_data":"network_data (B)", "comm_group":"comm. group", "dims": "Dimensions"}])
-            writer.writerows([{"uid": uid} | self.stats[self.iter][uid] for uid in self.stats[self.iter]])
+            writer.writerows([
+                    {"uid": uid, **self.stats[self.iter][uid]} for uid in self.stats[self.iter]
+                ])
 
     def summarize(self):
         memory_footprint, num_ops, hbm_reads, network_data = self.sumUp()

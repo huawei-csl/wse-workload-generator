@@ -8,8 +8,10 @@ setup(
     author_email="ahmet.yuzuguler@huawei.com",
     description="A trace generator for WSE workload simulations",
     packages=find_packages(),  # Automatically find sub-packages
-    python_requires=">=3.6",  # Specify Python version compatibility
+    python_requires=">=3.7",  # Specify Python version compatibility
     install_requires=[
-        # Add your dependencies here, e.g., "numpy>=1.21.0"
+        "numpy>=1.21.0",
+        "matplotlib>=3.4.0",
+        "networkx>=2.6.3"
     ],
 )

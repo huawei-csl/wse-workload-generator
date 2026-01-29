@@ -301,7 +301,7 @@ class MoE:
             if src_id == self.dist_info.rank:
                 exp_input_batch_ids = self.get_batchids_by_expert("shared")
                 buff_ind = exp_input_batch_ids.index(batch_id)
-                uid = f"{exp_outs["shared"].uid}_node{src_id}_slice{buff_ind}"
+                uid = f"{exp_outs['shared'].uid}_node{src_id}_slice{buff_ind}"
                 exp_outs_to_recv.append(
                     Slice(exp_outs["shared"], [buff_ind], axis=0, uid=uid).forward(stats=stats)
                 )
@@ -463,7 +463,8 @@ class MoE:
                 outputs[node_id] += [("s", batch_id) for batch_id in batch_ids]
         
         for node_id in outputs:
-            logging.info(f"Node {node_id} produced outputs (e_s): {", ".join(f"{expert_id}_{batch_id}" for expert_id, batch_id in outputs[node_id])}")
+            output_ids = ", ".join(f"{expert_id}_{batch_id}" for expert_id, batch_id in outputs[node_id])
+            logging.info(f"Node {node_id} produced outputs (e_s): {output_ids}")
 
         logging.info("\n---- Combine Traffic Send ----\n")
         combine_traffic = [[[] for j in range(self.dist_info.num_nodes)] for i in range(self.dist_info.num_nodes)]
@@ -479,13 +480,15 @@ class MoE:
         for src_id in range(self.dist_info.num_nodes):
             for dst_id in range(self.dist_info.num_nodes):
                 if len(combine_traffic[src_id][dst_id]) > 0:
-                    logging.info(f"Node {src_id} sends {len(combine_traffic[src_id][dst_id])} outputs to node {dst_id}: {", ".join([f"{expert_id}_{batch_id}" for expert_id, batch_id in combine_traffic[src_id][dst_id]])}")
+                    output_ids = ", ".join([f"{expert_id}_{batch_id}" for expert_id, batch_id in combine_traffic[src_id][dst_id]])
+                    logging.info(f"Node {src_id} sends {len(combine_traffic[src_id][dst_id])} outputs to node {dst_id}: {output_ids}")
 
         logging.info("\n---- Combine Traffic Receive ----\n")
         for dst_id in range(self.dist_info.num_nodes):
             for src_id in range(self.dist_info.num_nodes):
                 if len(combine_traffic[src_id][dst_id]) > 0:
-                    logging.info(f"Node {dst_id} receives {len(combine_traffic[src_id][dst_id])} outputs from node {src_id}: {", ".join([f"{expert_id}_{batch_id}" for expert_id, batch_id in combine_traffic[src_id][dst_id]])}")        
+                    output_ids = ", ".join([f"{expert_id}_{batch_id}" for expert_id, batch_id in combine_traffic[src_id][dst_id]])
+                    logging.info(f"Node {dst_id} receives {len(combine_traffic[src_id][dst_id])} outputs from node {src_id}: {output_ids}")        
 
         logging.info("\n---- Weighted Sum ----\n")
         for node_id in range(self.dist_info.num_nodes):
@@ -506,7 +509,10 @@ class MoE:
                 batch_ids = [batch_id for batch_id in range(global_bsz) if self.dist_info.batch_map["attn"][batch_id] == dp_attn_rank]
 
                 for batch_id in batch_ids:
-                    logging.info(f"Node {node_id} sends output for sample {batch_id} in the same DP cluster to nodes: {" ".join([str(nid) for nid in dp_attn_cluster if nid != node_id])}")
+                    logging.info(
+                        f"Node {node_id} sends output for sample {batch_id} in the same DP cluster to nodes:"
+                        " ".join([str(nid) for nid in dp_attn_cluster if nid != node_id])
+                    )
         
         return dispatch_traffic, combine_traffic
 

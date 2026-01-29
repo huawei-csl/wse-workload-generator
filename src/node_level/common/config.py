@@ -34,7 +34,9 @@ class SystemConfig:
         dense_comm_groups, dense_ranks = get_comm_groups(self.num_nodes, dense_par_degrees)
         self.dense_comm_groups = dense_comm_groups
 
-        self.ranks = attn_ranks | ffn_ranks | dense_ranks
+        self.ranks = OrderedDict(attn_ranks) 
+        self.ranks.update(ffn_ranks)
+        self.ranks.update(dense_ranks)
 
         for rank in range(self.num_nodes):
             logging.info("rank:{}\t rank_pp:{}\t rank_dp_attn:{}\t rank_sp:{}\t rank_tp_attn:{}\t pp_comm_group:{}\t dp_attn_comm_group:{}\t sp_comm_group:{}\t tp_attn_comm_group:{}"
