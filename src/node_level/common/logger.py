@@ -13,3 +13,5 @@ def init_logger(level, path):
         stream=sys.stdout,
     )
     logging.getLogger().addHandler(stdout_handler)
+
+    logging.info("Logger initialized. Log file: %s", path)

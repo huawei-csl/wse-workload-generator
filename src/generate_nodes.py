@@ -40,11 +40,11 @@ if __name__=="__main__":
     argparser.add_argument("--outdir", type=str, default="./output", help="directory for generated files")
     args = argparser.parse_args()
 
+    init_logger(level=args.log.upper(), path='logs/generate_nodes.log')
+
     with open(args.model_config, "r") as f:
         model_config = json.load(f) 
         logging.info(model_config)
-
-    init_logger(level=args.log.upper(), path='logs/generate_nodes.log')
 
     out_dir = os.path.abspath(args.outdir)
     assert out_dir not in [".", "..", "./", "/", "//"], "out_dir seems to be not safe"

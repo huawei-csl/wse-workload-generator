@@ -91,7 +91,7 @@ The trace generator will generate core-level traces under **output/traces**
 ### Data movement pattern visualization
 Run the visualization tool:
 ```
-python visualize_traces.py --layers decode5 --iter decode0
+python src/visualize_traces.py --layers decode5 --iter decode0
 ```
 
 The visualization tool will generate a png file for each layer under **output/visuals**.
