@@ -31,7 +31,7 @@ class Slice:
             dims=input_dims,
             prec=self.prec,
         )
-        assert self.input_tensor.tile_size is not None, "Input tensor {} of View operation {} on node {} does not have tile size.".format(self.input_tensor.uid, uid, node_id)
+        assert self.input_tensor.tile_size is not None, "Input tensor {} of Slice operation {} on node {} does not have tile size.".format(self.input_tensor.uid, uid, node_id)
         
         
         if index_rng[1] - index_rng[0] > 1:

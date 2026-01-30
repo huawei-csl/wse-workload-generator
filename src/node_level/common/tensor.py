@@ -183,8 +183,7 @@ class Concat:
             self.uid = uid
 
         self.axis = axis
-
-        # assert len(input_tensors) == 2, "Only support concatenating two tensors for now"
+        assert len(input_tensors) >= 1, "At least one tensors are required for concatenation"
 
         node_id = input_tensors[0].node_id
         for tensor in input_tensors[1:]:

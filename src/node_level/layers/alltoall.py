@@ -8,7 +8,7 @@ from src.node_level.common.utils import dtype_to_byte
 class AlltoAll:
     def __init__(self, uid, vector_size, cluster_size, dist_info, dtype) -> None:
         super().__init__()
-        raise NotImplementedError("Not yet implemented, ask for support")
+        # raise NotImplementedError("Not yet implemented, ask for support")
     
         logging.debug("AlltoAll layer {} with vector size: {} among {} devices".format(uid, vector_size, cluster_size))
 
@@ -28,10 +28,10 @@ class AlltoAll:
         dims = self.get_dims(bsz*seqlen)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, network data: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, network_data, dims))
-        out = Tensor(f"{self.uid}_out", self.dist_info.rank, (bsz, seqlen, hidden_dim))
+        outs = [Tensor(f"{x.uid}_a2a_{self.dist_info.rank}", dst_id, (bsz, seqlen, hidden_dim)) for dst_id in self.comm_group]
         stats.append(self.uid, "AlltoAll", memory_footprint, num_ops, hbm_reads, network_data, comm_group=self.comm_group, dims=dims)
-        get_compute_graph().add_node(self, [x], [out], attrs=None)
-        return out 
+        get_compute_graph().add_node(self, [x], outs, attrs=None)
+        return outs[self.dist_info.rank]
     
     def memory_footprint(self, bsz=None, ctx_len=None):
         return 0
