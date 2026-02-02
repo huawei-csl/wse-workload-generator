@@ -8,7 +8,7 @@ from src.node_level.layers.sum import Sum
 from src.node_level.layers.multicast import Multicast
 from src.node_level.layers.unicast import Unicast
 from src.node_level.layers.barrier import Barrier
-from src.node_level.layers.alltoall import AlltoAll
+from src.node_level.layers.allgather import AllGather
 
 from src.node_level.common.tensor import Tensor, Slice, Concat, get_tensor
 from src.node_level.common.compute_graph import reset_compute_graph
@@ -32,11 +32,11 @@ class MoE:
         self.dtype = dtype 
         self.rank = dist_info.rank
         
-        if self.dist_info.ep > 1 and dist_info.moe_comm == "alltoall":
-            self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dist_info, dtype)
+        if self.dist_info.ep > 1 and dist_info.moe_comm == "allgather":
+            self.allgather_dispatch = AllGather(uid+"_ag_disp", hidden_size, dist_info.num_nodes, dist_info, dtype)
 
-        if self.dist_info.ep > 1 and self.dist_info.moe_comm == "alltoall":
-            self.a2a_combine = AlltoAll(uid+"_a2a_comb", hidden_size, self.dist_info.num_nodes, dist_info, dtype)
+        if self.dist_info.ep > 1 and self.dist_info.moe_comm == "allgather":
+            self.allgather_combine = AllGather(uid+"_ag_comb", hidden_size, self.dist_info.num_nodes, dist_info, dtype)
 
         # store which expert resides on which node
         self.expertid_to_node = self.dist_info.get_expert_mapping(self.n_experts)
@@ -54,7 +54,7 @@ class MoE:
         if self.dist_info.rank in self.dist_info.shared_expert_ranks:
             self.shared_expert = FFN(uid+"_exp_shared", hidden_size, intermediate_size, dist_info, dtype)
 
-    def calc_combine_a2a_traffic(self):
+    def calc_combine_allgather_traffic(self):
         batch_mappings = self.dist_info.batch_map["attn"]
 
         expert_routings = get_moe_gate_model().get_expert_routings(layer_id=self.uid)
@@ -128,10 +128,10 @@ class MoE:
             batch_ids = sorted(np.where(expert_routings==expert_id)[1])
         return batch_ids
 
-    def forward_dispatch_alltoall(self, x, stats):
+    def forward_dispatch_allgather(self, x, stats):
         _, seqlen, hidden_size = x.dims
         
-        self.a2a_dispatch.forward(x, stats=stats)
+        self.allgather_dispatch.forward(x, stats=stats)
 
         x_recv = {}
 
@@ -146,7 +146,7 @@ class MoE:
                 src_id = dp_attn_cluster[0]
 
                 buff_size = sum([v == dp_attn_rank for v in batch_mappings.values()])
-                local_buffer = Tensor(f"{x.uid}_a2a_{src_id}", self.dist_info.rank, [buff_size, seqlen, hidden_size])
+                local_buffer = Tensor(f"{x.uid}_ag_{src_id}", self.dist_info.rank, [buff_size, seqlen, hidden_size])
 
                 # offset to substract from batch id to get the correct slice index
                 # if bsz=32 and dp_attn=4, each Tensor has a batch size of 8.
@@ -178,7 +178,7 @@ class MoE:
 
                 batchid_offset = [v == dp_attn_rank for v in batch_mappings.values()].index(True)
 
-                local_buffer = Tensor(f"{x.uid}_a2a_{src_id}", self.dist_info.rank, x.dims)
+                local_buffer = Tensor(f"{x.uid}_ag_{src_id}", self.dist_info.rank, x.dims)
                 x_slice = Slice(
                     local_buffer,
                     [batch_id-batchid_offset],
@@ -277,9 +277,9 @@ class MoE:
         logging.debug("Total number of routed samples for device {}: {}".format(self.dist_info.rank_ep, total_moe_num_tokens_per_device))
         return exp_outs
     
-    def forward_combine_alltoall(self, exp_outs, stats):
+    def forward_combine_allgather(self, exp_outs, stats):
         '''
-        Concat all expert outputs in a tensor and perform alltoall to gather them
+        Concat all expert outputs in a tensor and perform allgather to gather them
         '''
         if len(exp_outs) == 0:
             return 
@@ -292,7 +292,7 @@ class MoE:
         for dst in self.combine_traffic[self.dist_info.rank]:
             assert x_local.dims[0] == len(self.combine_traffic[self.dist_info.rank][dst])
 
-        out_tensor = self.a2a_combine.forward(x_local, stats=stats)
+        out_tensor = self.allgather_combine.forward(x_local, stats=stats)
         return out_tensor
 
     def forward_combine_multicast(self, exp_outs, stats):
@@ -375,7 +375,7 @@ class MoE:
         Barrier(self.uid+"_barrier_uc", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the unicast before proceeding
 
 
-    def forward_combine_a2a_add(self, exp_outs, a2a_out, stats):
+    def forward_combine_allgather_add(self, exp_outs, ag_out, stats):
         _, seqlen, hidden_dim = next(iter(exp_outs.values())).dims
 
         batch_ids = self.dist_info.get_local_batchids("attn")
@@ -393,14 +393,14 @@ class MoE:
                 buff_ind = exp_input_batch_ids.index(batch_id)
                 # uid = f"{exp_outs[expert_id].uid}_node{src_id}_slice{buff_ind}"
 
-                recv_buffer = Tensor(f"{self.uid}_combine_concat_a2a_{src_id}", self.dist_info.rank, [len(exp_input_batch_ids), seqlen, hidden_dim])
+                recv_buffer = Tensor(f"{self.uid}_combine_concat_ag_{src_id}", self.dist_info.rank, [len(exp_input_batch_ids), seqlen, hidden_dim])
 
                 exp_outs_to_recv.append(
                     Slice(recv_buffer, [buff_ind], axis=0, uid=recv_buffer.uid + f"_expert{expert_id}_slice{buff_ind}").forward(stats=stats)
                 )
 
             src_id = self.dist_info.batch_to_shared_exp[batch_id]
-            recv_buffer = Tensor(f"{self.uid}_combine_concat_a2a_{src_id}", self.dist_info.rank, [len(self.combine_traffic[src_id][self.dist_info.rank]), seqlen, hidden_dim])
+            recv_buffer = Tensor(f"{self.uid}_combine_concat_ag_{src_id}", self.dist_info.rank, [len(self.combine_traffic[src_id][self.dist_info.rank]), seqlen, hidden_dim])
 
             buff_offset = [v == src_id for v in self.dist_info.batch_to_shared_exp.values()].index(True)
             # uid = f"{exp_outs['shared'].uid}_node{src_id}_slice{buff_ind}"
@@ -514,8 +514,8 @@ class MoE:
 
         # dispatch the inputs to other nodes based on expert routing
         if self.dist_info.ep > 1:
-            if self.dist_info.moe_comm == "alltoall":
-                expert_recv_buffs = self.forward_dispatch_alltoall(x, stats=stats)
+            if self.dist_info.moe_comm == "allgather":
+                expert_recv_buffs = self.forward_dispatch_allgather(x, stats=stats)
             elif self.dist_info.moe_comm == "multicast":     
                 expert_recv_buffs = self.forward_dispatch_multicast(x, stats=stats)
             else:
@@ -526,10 +526,10 @@ class MoE:
 
         # combine the outputs from all experts
         if self.dist_info.ep > 1:
-            if self.dist_info.moe_comm == "alltoall":
-                self.calc_combine_a2a_traffic()
-                a2a_out = self.forward_combine_alltoall(exp_outs, stats=stats)
-                out_tensor = self.forward_combine_a2a_add(exp_outs, a2a_out, stats=stats)
+            if self.dist_info.moe_comm == "allgather":
+                self.calc_combine_allgather_traffic()
+                ag_out = self.forward_combine_allgather(exp_outs, stats=stats)
+                out_tensor = self.forward_combine_allgather_add(exp_outs, ag_out, stats=stats)
 
             elif self.dist_info.moe_comm == "multicast":
                 self.calc_combine_multicast_traffic()

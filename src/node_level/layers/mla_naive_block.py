@@ -4,7 +4,7 @@ import logging
 from src.node_level.layers.linear import Linear
 from src.node_level.layers.mla_naive import MLANaiveAttention
 from src.node_level.layers.allreduce import Allreduce
-from src.node_level.layers.alltoall import AlltoAll
+from src.node_level.layers.allgather import AllGather
 
 from src.node_level.common.utils import intceil
 
@@ -38,8 +38,8 @@ class MLANaiveBlock:
         if dist_info.tp_attn > 1:
             self.ops["allreduce_tp"] = Allreduce(uid+"_ar_tp", self.rank, hidden_size, dist_info.attn_comm_groups["tp_attn"], dtype)
 
-        if dist_info.moe_comm == "alltoall":
-            self.a2a_dispatch = AlltoAll(uid+"_a2a_disp", hidden_size, dist_info.num_nodes, dist_info, dtype)
+        if dist_info.moe_comm == "allgather":
+            self.ag_dispatch = AllGather(uid+"_ag_disp", hidden_size, dist_info.num_nodes, dist_info, dtype)
 
     def forward(self, x, ctx_len, stats):
         raise NotImplementedError("Not yet implemented, ask for support")
@@ -66,8 +66,8 @@ class MLANaiveBlock:
 
         # if the next layer is MoE, we need to multicast the output to the experts selected by the gate for the current batch
         elif isinstance(self.next_layer, MoE):
-            if self.dist_info.moe_comm == "alltoall":
-                self.a2a_dispatch.forward(local_bsz*seqlen, stats=stats)
+            if self.dist_info.moe_comm == "allgather":
+                self.ag_dispatch.forward(local_bsz*seqlen, stats=stats)
             elif self.dist_info.moe_comm == "multicast":
                 # batch ids processed by this DP cluster
                 batch_ids = list(range(self.dist_info.rank_dp_attn*local_bsz*seqlen, (self.dist_info.rank_dp_attn+1)*local_bsz*seqlen))

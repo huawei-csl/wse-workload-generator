@@ -111,7 +111,6 @@ Following system configurations are not supported:
 * If ```ep > 1```, ```tp_ffn``` must be equal to 1. (you can still use DP or TP for attention layers)
 * Batch size must be greater than or equal to ```dp_attn```
 
-
 ## License
 BSD-3-Clause-Clear License
 

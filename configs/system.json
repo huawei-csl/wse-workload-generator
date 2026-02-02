@@ -13,7 +13,7 @@
         "ep": 1,
         "n_redundant_shared_exp": 1,
         "expert_workload_model": "empirical_mmlu",
-        "moe_comm": "alltoall"
+        "moe_comm": "allgather"
     },
     "decode": 
     {
@@ -29,6 +29,6 @@
         "ep": 56,
         "n_redundant_shared_exp": 1,
         "expert_workload_model": "uniform",
-        "moe_comm": "alltoall"
+        "moe_comm": "allgather"
     }
 }
