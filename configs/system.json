@@ -29,6 +29,6 @@
         "ep": 56,
         "n_redundant_shared_exp": 1,
         "expert_workload_model": "uniform",
-        "moe_comm": "allgather"
+        "moe_comm": "alltoall"
     }
 }

@@ -59,7 +59,7 @@ class NodeStats:
     def summarize(self):
         memory_footprint, num_ops, hbm_reads, network_data = self.sumUp()
 
-        logging.info("--------- Summary per device -----------")
+        logging.info("-------- Summary for rank ---------")
         logging.info("memory_footprint: {}".format(byte_to_str(memory_footprint)))
         logging.info("num_ops: {}".format(mac_to_str(num_ops)))
         logging.info("hbm_reads: {}".format(byte_to_str(hbm_reads)))

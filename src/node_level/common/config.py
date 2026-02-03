@@ -9,6 +9,9 @@ class SystemConfig:
         return
 
     def construct(self):
+        assert self.expert_workload_model in ["identical", "uniform", "empirical_mmlu"], "expert_workload_model must be one of ['identical', 'uniform', 'empirical_mmlu']"
+        assert self.moe_comm in ["alltoall", "allgather", "multicast"], "moe_comm must be one of ['allgather', 'multicast']"
+
         for val in [self.dp_attn, self.dp_ffn, self.tp_attn, self.tp_ffn, self.pp, self.sp, self.ep]:
             assert self.num_nodes % val == 0
         assert self.num_nodes == self.dp_attn * self.tp_attn * self.sp * self.pp, f"Number of nodes {self.num_nodes} is not equal to the parallelization factors for Attention blocks: {self.dp_attn} x {self.tp_attn} x {self.sp} x {self.pp}"

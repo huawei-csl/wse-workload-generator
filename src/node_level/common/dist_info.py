@@ -19,7 +19,6 @@ def get_itemids_from_bucketid(bucket_id, n_items, n_buckets):
 
     return item_ids
 
-
 def get_bucketid_from_itemid(item_id, n_items, n_buckets):
     assert np.all(item_id < n_items)
 
@@ -113,7 +112,6 @@ class DistInfo:
         for rank_dp_ffn in range(self.dp_ffn):
             self.batch_map["ffn"].update({batch_id:rank_dp_ffn for batch_id in get_itemids_from_bucketid(rank_dp_ffn, bsz, self.dp_ffn)})
 
-        # self.batch_to_shared_exp = {batch_id: self.nearest_shared_expert(batch_id) for batch_id in range(bsz)}
         self.batch_to_shared_exp = {}
         for batch_id in range(bsz):
             bucketid = get_bucketid_from_itemid(batch_id, bsz, self.n_redundant_shared_exp)
@@ -137,3 +135,45 @@ class DistInfo:
         assert layer_type in ["attn", "ffn"], "layer_type must be either 'attn' or 'ffn'"
         dp_cluster = [k for k,v in self.global_cfg.ranks["dp_"+layer_type].items() if v == dp_rank]
         return dp_cluster[0]
+
+    def get_dispatch_comm_matrix(self, layer_id, moe_gate_model, n_experts):
+        expert_map = self.get_expert_mapping(n_experts)
+
+        send_matrix = {src_id: {dst_id: [] for dst_id in range(self.num_nodes)} for src_id in range(self.num_nodes)}
+        for rank, dp_attn_rank in self.global_cfg.ranks["dp_attn"].items():
+            if rank == self.get_dp_master(dp_attn_rank, "attn"):
+                batch_ids = [batch_id for batch_id, r in self.batch_map["attn"].items() if r == dp_attn_rank]
+
+                for batch_id in batch_ids:
+                    expert_ids = moe_gate_model.get_mapping_by_batchids(layer_id, batch_id)
+
+                    for expert_id in expert_ids:
+                        expert_node = expert_map[expert_id]
+                        if batch_id not in send_matrix[rank][expert_node]:
+                            send_matrix[rank][expert_node].append(batch_id)
+
+                    shared_node = self.batch_to_shared_exp[batch_id]
+                    if batch_id not in send_matrix[rank][shared_node]:
+                        send_matrix[rank][shared_node].append(batch_id)
+                    
+        return send_matrix
+    
+    def get_combine_comm_matrix(self, layer_id, moe_gate_model, n_experts):
+        expert_map = self.get_expert_mapping(n_experts)
+
+        send_matrix = {src_id: {dst_id: [] for dst_id in range(self.num_nodes)} for src_id in range(self.num_nodes)}
+        for rank, dp_attn_rank in self.global_cfg.ranks["dp_attn"].items():
+            if rank == self.get_dp_master(dp_attn_rank, "attn"):
+                batch_ids = [batch_id for batch_id, r in self.batch_map["attn"].items() if r == dp_attn_rank]
+
+                for batch_id in batch_ids:
+                    expert_ids = moe_gate_model.get_mapping_by_batchids(layer_id, batch_id)
+
+                    for expert_id in expert_ids:
+                        expert_node = expert_map[expert_id]
+                        send_matrix[expert_node][rank].append((batch_id, expert_id))
+
+                    shared_node = self.batch_to_shared_exp[batch_id]
+                    send_matrix[shared_node][rank].append((batch_id, "shared"))
+
+        return send_matrix

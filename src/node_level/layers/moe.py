@@ -9,6 +9,7 @@ from src.node_level.layers.multicast import Multicast
 from src.node_level.layers.unicast import Unicast
 from src.node_level.layers.barrier import Barrier
 from src.node_level.layers.allgather import AllGather
+from src.node_level.layers.alltoallv import AllToAllv
 
 from src.node_level.common.tensor import Tensor, Slice, Concat, get_tensor
 from src.node_level.common.compute_graph import reset_compute_graph
@@ -34,8 +35,6 @@ class MoE:
         
         if self.dist_info.ep > 1 and dist_info.moe_comm == "allgather":
             self.allgather_dispatch = AllGather(uid+"_ag_disp", hidden_size, dist_info.num_nodes, dist_info, dtype)
-
-        if self.dist_info.ep > 1 and self.dist_info.moe_comm == "allgather":
             self.allgather_combine = AllGather(uid+"_ag_comb", hidden_size, self.dist_info.num_nodes, dist_info, dtype)
 
         # store which expert resides on which node
@@ -53,6 +52,7 @@ class MoE:
         self.shared_expert = None
         if self.dist_info.rank in self.dist_info.shared_expert_ranks:
             self.shared_expert = FFN(uid+"_exp_shared", hidden_size, intermediate_size, dist_info, dtype)
+
 
     def calc_combine_allgather_traffic(self):
         batch_mappings = self.dist_info.batch_map["attn"]
@@ -81,7 +81,6 @@ class MoE:
             self.combine_traffic[src_id] = {}
             for dst_id in self.dist_info.ffn_comm_groups["ep"]:
                 self.combine_traffic[src_id][dst_id] = list(outputs[src_id])
-
 
     def calc_combine_multicast_traffic(self):
         batch_mappings = self.dist_info.batch_map["attn"]
@@ -196,6 +195,111 @@ class MoE:
                 
         return x_recv
 
+    def forward_dispatch_alltoall(self, x, stats):
+        _, seqlen, hidden_dim = x.dims
+
+        send_matrix = self.dist_info.get_dispatch_comm_matrix(self.uid, get_moe_gate_model(), self.n_experts)
+
+        # # batch ids processed by this DP cluster
+        dp_local_batch_ids = self.dist_info.get_local_batchids("attn")
+
+        x_send_buff = {}
+        for dst_node_id in send_matrix[self.rank]:
+            
+            x_send_buff[dst_node_id] = []
+            for batch_id in send_matrix[self.rank][dst_node_id]:
+                assert batch_id in dp_local_batch_ids, "Batch id {} is not in local batch ids {}".format(batch_id, dp_local_batch_ids)
+
+                minibatch_offset = dp_local_batch_ids[0]
+                x_slice = Slice(x, [batch_id-minibatch_offset], axis=0, uid=x.uid + f"_slice{batch_id}_dst{dst_node_id}").forward(stats=stats)
+                x_send_buff[dst_node_id].append(x_slice)
+
+        input_split = [len(x_send_buff[dst_node_id]) for dst_node_id in x_send_buff]
+        output_split = [len(send_matrix[src_node_id][self.rank]) for src_node_id in range(self.dist_info.num_nodes)]
+
+        x_send_buff_concats = []
+        for dst_node_id in x_send_buff:
+            if len(x_send_buff[dst_node_id]) > 0:
+                x_send_buff_concat = Concat(
+                    x_send_buff[dst_node_id],
+                    axis=0,
+                    uid=self.uid + "_dispatch_send_concat_" + str(dst_node_id)
+                ).forward(stats=stats)
+                x_send_buff_concats.append(x_send_buff_concat)
+            else:
+                x_send_buff_concats.append(
+                    Tensor(
+                        f"{self.uid}_empty_tensor_{dst_node_id}", 
+                        self.dist_info.rank, 
+                        [0, seqlen, hidden_dim]
+                    )
+                )
+        
+        alltoall_dispatch = AllToAllv(
+            self.uid + "_a2a_disp", 
+            rank = self.dist_info.rank, 
+            input_split = input_split,
+            output_split = output_split,
+            comm_group=self.dist_info.ffn_comm_groups["ep"],
+            dtype = self.dtype
+        )
+        alltoall_dispatch.forward(x_send_buff_concats, stats=stats)
+
+        x_recv_buff = []
+        for src_node_id in range(self.dist_info.num_nodes):
+            buff_size = list(x.dims)
+            buff_size[0] = len(send_matrix[src_node_id][self.rank])
+            x_recv_buff.append(
+                Tensor(f"{self.uid}_a2a_disp_{src_node_id}", self.dist_info.rank, buff_size)
+            )
+
+        x_recv = {}
+        for e in self.experts:
+            x_recv[e] = []
+            recv_batch_ids = self.get_batchids_by_expert(e)
+            if len(recv_batch_ids) > 0:
+                for batch_id in recv_batch_ids:
+                    dp_rank = self.dist_info.get_dp_rank_from_batchids([batch_id], "attn")[0]
+                    src_id = self.dist_info.get_dp_master(dp_rank, "attn")
+
+                    ind = send_matrix[src_id][self.rank].index(batch_id)
+                    x_recv_slice = Slice(
+                        x_recv_buff[src_id],
+                        [ind],
+                        axis=0,
+                        uid=x_recv_buff[src_id].uid + f"_expert{e}_slice{batch_id}"
+                    ).forward(stats=stats)
+                    x_recv[e].append(x_recv_slice)
+            x_recv[e] = Concat(
+                x_recv[e],
+                axis=0,
+                uid=f"{self.uid}_dispatch_recv_concat_expert{e}_" + hash_string("_".join([str(batch_id) for batch_id in recv_batch_ids]))
+            ).forward(stats=stats)
+
+        if self.shared_expert:
+            x_recv["shared"] = []
+            batch_ids_for_shared = self.get_batchids_by_expert("shared")
+            if len(batch_ids_for_shared) > 0:
+                for batch_id in batch_ids_for_shared:
+                    dp_rank = self.dist_info.get_dp_rank_from_batchids([batch_id], "attn")[0]
+                    src_id = self.dist_info.get_dp_master(dp_rank, "attn")
+
+                    ind = send_matrix[src_id][self.rank].index(batch_id)
+                    x_recv_slice = Slice(
+                        x_recv_buff[src_id],
+                        [ind],
+                        axis=0,
+                        uid=x_recv_buff[src_id].uid + f"_shared_slice{batch_id}"
+                    ).forward(stats=stats)
+                    x_recv["shared"].append(x_recv_slice)
+            x_recv["shared"] = Concat(
+                x_recv["shared"],
+                axis=0,
+                uid=self.uid + "_shared_concat_" + hash_string("_".join([str(batch_id) for batch_id in batch_ids_for_shared]))
+            ).forward(stats=stats)
+
+        return x_recv
+
     def forward_dispatch_multicast(self, x, stats):
         _, seqlen, hidden_dim = x.dims
         # batch ids processed by this DP cluster
@@ -295,6 +399,60 @@ class MoE:
         out_tensor = self.allgather_combine.forward(x_local, stats=stats)
         return out_tensor
 
+
+    def forward_combine_alltoall(self, exp_outs, stats):
+        send_matrix = self.dist_info.get_combine_comm_matrix(self.uid, get_moe_gate_model(), self.n_experts)
+
+        x_send_buff = []
+        for dst_node in send_matrix[self.rank]:
+            if len(send_matrix[self.rank][dst_node]) > 0:
+                exp_outs_to_send = []
+                for batch_id, expert_id in send_matrix[self.rank][dst_node]:
+                    exp_input_batch_ids = self.get_batchids_by_expert(expert_id)
+                    minibatch_ind = np.argwhere(np.array(exp_input_batch_ids) == batch_id).item()
+                    exp_outs_to_send.append(
+                        Slice(exp_outs[expert_id], [minibatch_ind], axis=0, uid=exp_outs[expert_id].uid + f"_slice{batch_id}").forward(stats=stats)
+                    )
+                concat_uid = self.uid + "_gather_unicast_concat_" + hash_string("_".join([f"{batch_id}e{expert_id}" for batch_id, expert_id in send_matrix[self.rank][dst_node]]))
+                x_send_buff.append(
+                    Concat(
+                        exp_outs_to_send, 
+                        axis=0,
+                        uid=concat_uid
+                    ).forward(stats=stats)
+                )
+            else:
+                x_send_buff.append(
+                    Tensor(
+                        f"{self.uid}_empty_tensor_{dst_node}", 
+                        self.dist_info.rank, 
+                        [0, exp_outs[next(iter(exp_outs))].dims[1], 
+                         exp_outs[next(iter(exp_outs))].dims[2]]
+                    )
+                )
+
+        self.dist_info.get_local_batchids("attn")
+
+        input_split = [len(send_matrix[self.rank][dst_node_id]) for dst_node_id in send_matrix[self.rank]]
+        output_split = [len(send_matrix[src_node_id][self.rank]) for src_node_id in range(self.dist_info.num_nodes)]
+        
+        if self.dist_info.is_dp_master():
+            assert sum(output_split) == len(self.dist_info.get_local_batchids("attn")) * (self.num_experts_per_tok + self.n_shared_experts)
+        else:
+            assert sum(output_split) == 0
+
+        _, seqlen, hidden_dim = next(iter(exp_outs.values())).dims
+        
+        alltoall_combine = AllToAllv(
+            self.uid + "_combine_a2a",
+            rank=self.dist_info.rank,
+            input_split=input_split,
+            output_split=output_split,
+            comm_group=self.dist_info.ffn_comm_groups["ep"],
+            dtype=self.dtype
+        )
+        alltoall_combine.forward(x_send_buff, stats=stats)
+
     def forward_combine_multicast(self, exp_outs, stats):
         if len(exp_outs) == 0:
             return 
@@ -369,7 +527,6 @@ class MoE:
                     uid=concat_uid).forward(stats=stats)
                 Unicast(self.uid+"_unicast_"+str(dst_node), dims=unicast_tensor.dims, src=self.dist_info.rank, dst=dst_node, dtype=self.dtype).forward(
                     unicast_tensor, stats=stats)
-                
                 assert len(batchid_dst[dst_node]) == unicast_tensor.dims[0]
 
         Barrier(self.uid+"_barrier_uc", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the unicast before proceeding
@@ -516,6 +673,8 @@ class MoE:
         if self.dist_info.ep > 1:
             if self.dist_info.moe_comm == "allgather":
                 expert_recv_buffs = self.forward_dispatch_allgather(x, stats=stats)
+            elif self.dist_info.moe_comm == "alltoall":
+                expert_recv_buffs = self.forward_dispatch_alltoall(x, stats=stats)
             elif self.dist_info.moe_comm == "multicast":     
                 expert_recv_buffs = self.forward_dispatch_multicast(x, stats=stats)
             else:
@@ -531,12 +690,26 @@ class MoE:
                 ag_out = self.forward_combine_allgather(exp_outs, stats=stats)
                 out_tensor = self.forward_combine_allgather_add(exp_outs, ag_out, stats=stats)
 
+            elif self.dist_info.moe_comm == "alltoall":
+                self.calc_combine_multicast_traffic()
+
+                self.forward_combine_alltoall(exp_outs, stats=stats)
+                if self.dist_info.is_dp_master():
+                    out_tensor = self.forward_combine_multicast_add(exp_outs, stats=stats)
+
+                    # then distribute the outputs within each DP cluster
+                    self.forward_distribute_dp(out_tensor, stats=stats)
+                else:
+                    out_tensor = Tensor(
+                        f"{self.uid}_multicast_dp", 
+                        self.dist_info.rank,
+                        dims=x.dims)
+
             elif self.dist_info.moe_comm == "multicast":
                 self.calc_combine_multicast_traffic()
 
                 # first gather all expert outputs at dp masters
                 self.forward_combine_multicast(exp_outs, stats=stats)
-
                 if self.dist_info.is_dp_master():
                     out_tensor = self.forward_combine_multicast_add(exp_outs, stats=stats)
 

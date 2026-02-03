@@ -84,6 +84,9 @@ class MoEGateModel:
         expert_routings = self.get_expert_routings(layer_id)
         return expert_routings[:, batch_ids]
 
+    
+        
+
 moe_gate_model = None
 
 def get_moe_gate_model(num_experts_per_tok = None, n_routed_experts = None, layer_ids = None, workload_model = None):
