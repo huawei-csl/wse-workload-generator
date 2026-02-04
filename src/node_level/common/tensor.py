@@ -53,8 +53,15 @@ class Tensor:
             self.graph_id = f"{node_id}:{uid}"
             self.node_id = node_id
             self.dims = list(dims)
+
+            if "empty" in uid.lower():
+                assert self.is_empty(), f"Tensor {node_id}:{uid} is expected to be empty, but has dimensions {dims}."
+
             TensorRegistry.register(self)
             logging.debug(f"Tensor {node_id}:{uid} with dims {dims} is created.")
+
+    def is_empty(self):
+        return self.numel() == 0
 
     def numel(self):
         return eval("*".join([str(d) for d in self.dims]))

@@ -16,6 +16,7 @@ from src.core_level.layers.transpose import Transpose
 from src.core_level.layers.concat import Concat
 from src.core_level.layers.slice import Slice
 from src.core_level.layers.reduce import Sum
+from src.core_level.layers.alltoallv import AlltoAllv
 
 from src.core_level.common.graph import init_graph
 from src.core_level.common.tile import load_tiling_config
@@ -180,6 +181,20 @@ def generate_traces(args):
                     "type": AllreduceLayer, 
                     "attrs":{"uid": uid, "node_id": node_id, "comm_group": comm_group, "graph": graph, "dims": dims, "wafer": wafer, "prec": prec}
                 }
+
+            elif row["operation"] == "AlltoAll":
+                uid = row["uid"]
+                comm_group = list(map(int, row["comm. group"][1:-1].split(",")))
+                dims = list(map(int, row["Dimensions"].split(" -> ")[0][1:-1].split(", ")))
+                input_split = list(map(int, row["Dimensions"].split(" -> ")[1][1:-1].split(", ")))
+                
+                layer_attrs[node_id][uid] = {
+                    "type": AlltoAllv, 
+                    "attrs":{"uid": uid, "node_id": node_id, "comm_group": comm_group, "graph": graph, "dims": dims, "input_split": input_split, "wafer": wafer, "prec": prec}
+                }
+
+            elif row["operation"] == "AllGather":
+                raise NotImplementedError("AllGather operation is not implemented yet, ask for support.")
 
             elif row["operation"] == "View":
                 uid = row["uid"]

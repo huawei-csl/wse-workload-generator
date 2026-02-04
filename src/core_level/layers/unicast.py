@@ -160,19 +160,6 @@ class UnicastLayer:
         else:
             raise NotImplementedError("MulticastLayer.create_tiles() only supports 1D, 2D and 3D tensors.")
 
-        # # Tile from last dimension
-        # for d0, pD0 in enumerate(range(0, self.dims[-1], self.tile_size[-1])):
-        #     tiled_B = min(self.tile_size[-1], self.dims[-1] - pD0)
-
-        #     slice_indices = [(0, d) for d in self.dims[0:-1]] + [(pD0, pD0 + tiled_B)]
-
-        #     self.in_tiles[d0] = self.input_tensor.slice(slice_indices)
-        #     self.out_tiles[d0] = self.output_tensor.slice(slice_indices)
-
-        #     send_mem_sizes = self.in_tiles[d0].get_physical_address()
-        #     recv_mem_sizes = self.out_tiles[d0].get_physical_address()
-        #     assert sum(send_mem_sizes.values()) == sum(recv_mem_sizes.values()), "Mismatched total memory sizes between send0 and next tile in TileUnicastOp {}.".format(self.id)
-
     def create_ops(self):
         indices = []
         tmp_ops = self.in_tiles
@@ -191,9 +178,6 @@ class UnicastLayer:
             )
             set_dict_val(self.tile_ops, ind, op)
 
-        # for b in self.in_tiles:
-        #     self.tile_ops[b] = TileUnicastOp("{}_unicast_{}".format(self.uid, b), self.in_tiles[b], self.out_tiles[b])
-
     def map_ops(self):
         dedicated_core = self.wafer.get_core(self.src, 0)
 
@@ -208,11 +192,6 @@ class UnicastLayer:
             op = get_dict_val(self.tile_ops, ind)
             op.map_to_core(dedicated_core)
             self.stats.merge(op.stats)
-
-        # dedicated_core = self.wafer.get_core(self.src, 0)
-        # for b in self.tile_ops:
-        #     self.tile_ops[b].map_to_core(dedicated_core)
-        #     self.stats.merge(self.tile_ops[b].stats)
 
     def calc_expected(self):
         expected = {"copy": eval("*".join(map(str, self.dims))) * dtype_to_byte(self.input_tensor.prec)}

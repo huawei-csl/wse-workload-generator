@@ -54,14 +54,17 @@ class Tensor:
     def __init__(self, uid, dims, prec) -> None:
         if not hasattr(self, 'uid'):
             self.uid = uid
-            
+
             try:
                 node_id = int(uid.split(":")[0])
             except:
                 assert False, f"Tensor uid {uid} is not in the correct format. It should be in the format 'node_id:unique_id'."
 
-            self.dims = dims # List of dimensions
-            
+            self.dims = list(dims) # List of dimensions
+
+            if "empty" in uid:
+                assert self.is_empty(), "Tensor {} is expected to be empty, but it is not.".format(self.uid)
+
             self.n_dims = len(dims) # Number of dimensions
             assert self.n_dims in [1, 2, 3, 4], "Only 1D, 2D, 3D, and 4D tensors are supported."
 
@@ -86,6 +89,9 @@ class Tensor:
         tile = Tile(tile_id, self, indices, prec=self.prec)
         
         return tile
+
+    def is_empty(self):
+        return eval("*".join(map(str, self.dims))) == 0
 
     '''
     Map the tensor to memory banks using FRACTAL_Z layout, where each block of size block_size is mapped to a memory bank in a round-robin fashion.

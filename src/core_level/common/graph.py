@@ -111,14 +111,13 @@ class Graph:
 
         assert nx.is_directed_acyclic_graph(self.graph), "Graph contains a cycle"
         
-
     def find_root_edges(self):
         '''
         Find all edges with no producers, represent input placeholders.
         '''
         root_edges = []
         for edge in self.edges:
-            if len(self.edges[edge]["srcs"]) == 0:
+            if len(self.edges[edge]["srcs"]) == 0 and "empty" not in edge:
                 root_edges.append(edge)
         return root_edges
 

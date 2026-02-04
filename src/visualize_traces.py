@@ -4,7 +4,7 @@ import argparse
 from src.core_level.common.wafer import Wafer
 from src.visualize.draw_wafer import DrawWafer
 
-ops = [
+ops_multicast = [
     "attn_absorb_wkva",
     "attn_absorb_wqa",
     "attn_absorb_wqb",
@@ -23,6 +23,25 @@ ops = [
     "moe_multicast_dp",
 ]
 
+ops_alltoall = [
+    "attn_absorb_wkva",
+    "attn_absorb_wqa",
+    "attn_absorb_wqb",
+    "attn_absorb_wkvb1",
+    "attn_absorb_absorbattn",
+    "attn_absorb_ar_sp",
+    "attn_absorb_wkvb2",
+    "attn_absorb_wo",
+    "attn_absorb_ar_tp",
+    "moe_gate",
+    "moe_a2a_disp_unicast",
+    "moe_exp",
+    "moe_exp_shared",
+    "moe_combine_a2a_unicast",
+    "moe_sum",
+    "moe_multicast_dp",
+]
+
 def visaulize_traces(args):
     mode = "decode" if args.iter.startswith("decode") else "prefill"
     with open(args.system_config, "r") as f:
@@ -31,6 +50,13 @@ def visaulize_traces(args):
         node_grid = cfg["node_grid"]
         core_grid = cfg["core_grid"]
     wafer = Wafer(node_grid, core_grid)
+
+    if cfg["moe_comm"] == "multicast":
+        ops = ops_multicast
+    elif cfg["moe_comm"] == "alltoall":
+        ops = ops_alltoall
+    else:
+        raise ValueError(f"Ops for this communication type not defined: {cfg['moe_comm']}")
 
     for i, uid in enumerate(ops):
         uid = f"{args.layers}_{uid}"
