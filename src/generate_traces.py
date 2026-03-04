@@ -72,6 +72,10 @@ def generate_traces(args):
                 if row["uid"].split("_")[0] not in layers_to_process:
                     continue
 
+            # Skip the root node
+            if row["uid"].split("_")[0] in ["queries"]:
+                continue
+
             if row["operation"] == "Linear":
                 uid = row["uid"]
 
