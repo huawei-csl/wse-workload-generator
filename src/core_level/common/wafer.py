@@ -1,6 +1,10 @@
 import os
 import logging
+import numpy as np
+import pandas as pd
+
 from typing import List
+from src.core_level.common.isa import InstructionSet
 
 
 def write_to_csv(dat, fname):
@@ -113,3 +117,83 @@ class Wafer:
                     else:
                         traces[node_id][core_id] = trace
         return traces
+        
+    def extract_traffic(self, traces):
+        traffic = []
+        for node_id in range(self.num_nodes):
+            for core_id in range(self.num_cores_per_node):
+                for trace in traces[node_id][core_id]:
+                    parsed_instr = InstructionSet.parse(trace)
+                    print(f"{core_id}:", parsed_instr)
+                    if parsed_instr[0] == "READ":
+                        # parsed core/bank ids are global ids, convert to local
+                        src_node = parsed_instr[1] // self.num_cores_per_node
+                        src_bank = parsed_instr[1] % self.num_cores_per_node
+                        dst_node = node_id
+                        dst_core = core_id
+                        size = parsed_instr[2]
+                        # self.register_bank_to_core(src_node, src_bank, node_id, core_id, size)
+                        traffic.append({"type": "READ", "src": f"{src_node}:B{src_bank}", "dst": f"{dst_node}:C{dst_core}", "size": size})
+                        logging.debug(f"READ from {src_node}:{src_bank} size {size}")
+                    elif parsed_instr[0] == "WRITE":
+                        src_node = node_id
+                        src_core = core_id
+                        dst_node = parsed_instr[1] // self.num_cores_per_node
+                        dst_bank = parsed_instr[1] % self.num_cores_per_node
+                        size = parsed_instr[2] 
+                        # self.register_core_to_bank(node_id, core_id, dst_node, dst_bank, size)
+                        traffic.append({"type": "WRITE", "src": f"{src_node}:C{src_core}", "dst": f"{dst_node}:B{dst_bank}", "size": size})
+                        logging.debug(f"WRITE to {dst_node}:{dst_bank} size {size}")
+                    elif parsed_instr[0] == "COPY":
+                        src_node = parsed_instr[1] // self.num_banks_per_node
+                        assert src_node == node_id, "Source node must be the current node"
+                        src_bank = parsed_instr[1] % self.num_banks_per_node
+                        dst_node = parsed_instr[2] // self.num_banks_per_node
+                        dst_bank = parsed_instr[2] % self.num_banks_per_node
+                        size = parsed_instr[3]
+                        # self.register_bank_to_bank(src_node, src_bank, dst_node, dst_bank, size)
+                        # traffic.append((src_node, f"B:{src_bank}", dst_node, f"B:{dst_bank}", size))
+                        traffic.append({"type": "COPY", "src": f"{src_node}:B{src_bank}", "dst": f"{dst_node}:B{dst_bank}", "size": size})
+                        logging.debug(f"COPY from {src_node}:{src_bank} to {dst_node}:{dst_bank} size {size}")
+                    elif parsed_instr[0] == "MULTICAST":
+                        src_node = parsed_instr[1] // self.num_banks_per_node
+                        assert src_node == node_id, "Source node must be the current node"
+                        src_bank = parsed_instr[1] % self.num_banks_per_node
+                        
+                        dsts = []
+                        for dst in parsed_instr[2]:
+                            dst_node = dst // self.num_banks_per_node
+                            dst_bank = dst % self.num_banks_per_node
+                            dsts.append((dst_node, dst_bank))
+                            size = parsed_instr[3]
+                            # self.register_bank_to_bank(src_node, src_bank, dst_node, dst_bank, size)
+                        
+                        dsts = ",".join([f"{dst_node}:B{dst_bank}" for dst_node, dst_bank in dsts])
+                        # traffic.append((src_node, f"B:{src_bank}", dst_node, f"B:{dst_bank}", size))
+                        traffic.append({"type": "MULTICAST", "src": f"{src_node}:B{src_bank}", "dst": dsts, "size": size})
+
+                        logging.debug(f"MULTICAST from {src_node}:{src_bank} to {dsts} size {size}")
+                    else:
+                        pass
+
+        return traffic
+
+    def calc_comm_matrix(self, traffic, fname):
+        assert self.num_banks_per_node == self.num_cores_per_node, "This function assumes the same number of cores and banks per node."
+        units = []
+        for node_id in range(self.num_nodes):
+            for core_id in range(self.num_cores_per_node):
+                units.append(f"{node_id}:C{core_id}")
+                units.append(f"{node_id}:B{core_id}")
+
+        comm_matrix = {row: {col: 0 for col in units} for row in units}
+        for comm in traffic:
+            src = comm["src"]
+            dsts = comm["dst"].split(",")
+            for dst in dsts:
+                comm_matrix[src][dst] += comm["size"]
+        
+        comm_df = pd.DataFrame(comm_matrix)
+        comm_df.to_csv(fname)
+
+        return comm_matrix

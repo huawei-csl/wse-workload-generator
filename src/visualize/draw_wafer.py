@@ -129,52 +129,44 @@ class DrawWafer:
             arrowprops=dict(arrowstyle="-", color=color, lw=1, alpha=min(alpha, 1.0)),  # Arrow style
         )
 
-    def draw_traces(self, traces, out_path="visualize/images/image.png"):
-        wafer = self.wafer
-        for node_id in range(wafer.num_nodes):
-            for core_id in range(wafer.num_cores_per_node):
-                for trace in traces[node_id][core_id]:
-                    parsed_instr = InstructionSet.parse(trace)
-                    print(f"{core_id}:", parsed_instr)
-                    if parsed_instr[0] == "READ":
-                        # parsed core/bank ids are global ids, convert to local
-                        src_node = parsed_instr[1] // wafer.num_cores_per_node
-                        src_bank = parsed_instr[1] % wafer.num_cores_per_node
-                        size = parsed_instr[2]
-                        self.register_bank_to_core(src_node, src_bank, node_id, core_id, size)
-                        logging.debug(f"READ from {src_node}:{src_bank} size {size}")
-                    elif parsed_instr[0] == "WRITE":
-                        dst_node = parsed_instr[1] // wafer.num_cores_per_node
-                        dst_bank = parsed_instr[1] % wafer.num_cores_per_node
-                        size = parsed_instr[2] 
-                        self.register_core_to_bank(node_id, core_id, dst_node, dst_bank, size)
-                        logging.debug(f"WRITE to {dst_node}:{dst_bank} size {size}")
-                    elif parsed_instr[0] == "COPY":
-                        src_node = parsed_instr[1] // wafer.num_banks_per_node
-                        assert src_node == node_id, "Source node must be the current node"
-                        src_bank = parsed_instr[1] % wafer.num_banks_per_node
-                        dst_node = parsed_instr[2] // wafer.num_banks_per_node
-                        dst_bank = parsed_instr[2] % wafer.num_banks_per_node
-                        size = parsed_instr[3]
-                        self.register_bank_to_bank(src_node, src_bank, dst_node, dst_bank, size)
-                        logging.debug(f"COPY from {src_node}:{src_bank} to {dst_node}:{dst_bank} size {size}")
-                    elif parsed_instr[0] == "MULTICAST":
-                        src_node = parsed_instr[1] // wafer.num_banks_per_node
-                        assert src_node == node_id, "Source node must be the current node"
-                        src_bank = parsed_instr[1] % wafer.num_banks_per_node
-                        
-                        dsts = []
-                        for dst in parsed_instr[2]:
-                            dst_node = dst // wafer.num_banks_per_node
-                            dst_bank = dst % wafer.num_banks_per_node
-                            dsts.append((dst_node, dst_bank))
-                            size = parsed_instr[3]
-                            self.register_bank_to_bank(src_node, src_bank, dst_node, dst_bank, size)
-                        
-                        dsts = ",".join([f"{dst_node}:{dst_bank}" for dst_node, dst_bank in dsts])
-                        logging.debug(f"MULTICAST from {src_node}:{src_bank} to {dsts} size {size}")
-                    else:
-                        pass
+    def draw_traces(self, traffic, out_path="visualize/images/image.png"):
+        for entry in traffic:
+            if entry["type"] == "READ":
+                src_node = int(entry["src"].split(":")[0])
+                assert entry["src"].split(":")[1][0] == "B", "Source must be a bank"
+                src_bank = int(entry["src"].split(":")[1][1:])
+                dst_node = int(entry["dst"].split(":")[0])
+                assert entry["dst"].split(":")[1][0] == "C", "Destination must be a core"
+                dst_core = int(entry["dst"].split(":")[1][1:])
+                self.register_bank_to_core(src_node, src_bank, dst_node, dst_core, entry["size"])
+            elif entry["type"] == "WRITE":
+                src_node = int(entry["src"].split(":")[0])
+                assert entry["src"].split(":")[1][0] == "C", "Source must be a core"
+                src_core = int(entry["src"].split(":")[1][1:])
+                dst_node = int(entry["dst"].split(":")[0])
+                assert entry["dst"].split(":")[1][0] == "B", "Destination must be a bank"
+                dst_bank = int(entry["dst"].split(":")[1][1:])
+                self.register_core_to_bank(src_node, src_core, dst_node, dst_bank, entry["size"])
+            elif entry["type"] == "COPY":
+                src_node = int(entry["src"].split(":")[0])
+                assert entry["src"].split(":")[1][0] == "B", "Source must be a bank"
+                src_bank = int(entry["src"].split(":")[1][1:])
+                dst_node = int(entry["dst"].split(":")[0])
+                assert entry["dst"].split(":")[1][0] == "B", "Destination must be a bank"
+                dst_bank = int(entry["dst"].split(":")[1][1:])
+                self.register_bank_to_bank(src_node, src_bank, dst_node, dst_bank, entry["size"])
+            elif entry["type"] == "MULTICAST":
+                src_node = int(entry["src"].split(":")[0])
+                assert entry["src"].split(":")[1][0] == "B", "Source must be a bank"
+                src_bank = int(entry["src"].split(":")[1][1:])
+                dsts = entry["dst"].split(",")
+                for dst in dsts:
+                    dst_node = int(dst.split(":")[0])
+                    assert dst.split(":")[1][0] == "B", "Destination must be a bank"
+                    dst_bank = int(dst.split(":")[1][1:])
+                    self.register_bank_to_bank(src_node, src_bank, dst_node, dst_bank, entry["size"])
+            else:
+                pass
 
         self.draw_wafer()
         self.draw_traffic()
@@ -214,9 +206,9 @@ class DrawWafer:
             
             self.draw_arrow(arrow_start, arrow_end, alpha=size/max_traffic)
 
-        self.add_colormap(max_traffic)
+        self.add_colormap(self.fig, max_traffic)
 
-    def add_colormap(self, max_value, color="red"):
+    def add_colormap(self, fig, max_value, color="red"):
         if max_value < 1024:
             title = "Bytes"
         elif max_value < 1024**2:
@@ -240,7 +232,7 @@ class DrawWafer:
 
         # Draw colorbar only
         bar_width = 0.01
-        cax = self.fig.add_axes([0.88, 0.2, bar_width, 0.6]) # Colorbar axes: [left, bottom, width, height]
+        cax = fig.add_axes([0.88, 0.2, bar_width, 0.6]) # Colorbar axes: [left, bottom, width, height]
         cbar = plt.colorbar(sm, cax=cax, shrink=0.01)
         cbar.ax.tick_params(labelsize=8)
         cbar.ax.set_title(
@@ -263,6 +255,55 @@ class DrawWafer:
 
     def register_bank_to_bank(self, src_node_id, src_bank_id, dst_node_id, dst_bank_id, size):
         self.register_traffic(f"bank_{src_node_id}_{src_bank_id}", f"bank_{dst_node_id}_{dst_bank_id}", size)
+
+    def draw_comm_matrix_by_core(self, comm_matrix, out_path):
+        '''comm matrix: dict of dict, comm_matrix[src][dst] = traffic_size'''
+
+        # convert comm_matrix to numpy 2D array
+        srcs = list(comm_matrix.keys())
+        dsts = list(srcs)
+
+        matrix = np.zeros((len(srcs), len(dsts)))
+        for i, src in enumerate(srcs):
+            for j, dst in enumerate(dsts):
+                matrix[i][j] = comm_matrix[src][dst]
+
+        fig = plt.figure(figsize=(10, 10))
+        plt.ylabel("src")
+        plt.xlabel("dst")
+
+        cmap = matplotlib.colors.LinearSegmentedColormap.from_list('white_red', ['white', 'red'])
+        plt.imshow(matrix, cmap=cmap, vmin=0, vmax=np.max(matrix))
+        self.add_colormap(fig, np.max(matrix))
+
+        plt.savefig(out_path, dpi=1000)
+        plt.close()
+
+    def draw_comm_matrix_by_node(self, comm_matrix, out_path):
+        '''comm matrix: dict of dict, comm_matrix[src][dst] = traffic_size'''
+
+        # convert comm_matrix to numpy 2D array
+        srcs = list(set(src.split(':')[0] for src in comm_matrix))
+        dsts = list(srcs)
+
+        matrix = np.zeros((len(srcs), len(dsts)))
+        for src in comm_matrix:
+            for dst in comm_matrix[src]:
+                src_node = int(src.split(':')[0])
+                dst_node = int(dst.split(':')[0])
+                matrix[src_node][dst_node] += comm_matrix[src][dst]
+
+        fig = plt.figure(figsize=(10, 10))
+        plt.ylabel("src")
+        plt.xlabel("dst")
+
+        cmap = matplotlib.colors.LinearSegmentedColormap.from_list('white_red', ['white', 'red'])
+        plt.imshow(matrix, cmap=cmap, vmin=0, vmax=np.max(matrix))
+        self.add_colormap(fig, np.max(matrix))
+
+        plt.savefig(out_path, dpi=1000)
+        plt.close()
+        
 
     def save(self, fname):
         plt.savefig(fname, dpi=300)

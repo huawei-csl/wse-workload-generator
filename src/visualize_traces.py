@@ -1,5 +1,8 @@
 import json
 import argparse
+import pandas as pd
+
+from copy import deepcopy
 
 from src.core_level.common.wafer import Wafer
 from src.visualize.draw_wafer import DrawWafer
@@ -58,11 +61,33 @@ def visaulize_traces(args):
     else:
         raise ValueError(f"Ops for this communication type not defined: {cfg['moe_comm']}")
 
+    comm_matrices = []
     for i, uid in enumerate(ops):
         uid = f"{args.layers}_{uid}"
         draw = DrawWafer(wafer)
         traces = wafer.load_traces(args.iter, dir_path=f"{args.outdir}/traces/{mode}", filter_by_uid=uid)
-        draw.draw_traces(traces, out_path=f"{args.outdir}/visuals/{i}_{uid}.png")
+        # wafer.analyze_traces(traces)
+        traffic = wafer.extract_traffic(traces)
+
+        draw.draw_traces(traffic, out_path=f"{args.outdir}/visuals/{i}_{uid}.png")
+
+        comm_matrix = wafer.calc_comm_matrix(traffic, f"{args.outdir}/comm_matrices/{i}_{uid}.csv")
+        comm_matrices.append(comm_matrix)
+
+        draw.draw_comm_matrix_by_core(comm_matrix, out_path=f"{args.outdir}/comm_matrices/{i}_{uid}_core.png")
+        draw.draw_comm_matrix_by_node(comm_matrix, out_path=f"{args.outdir}/comm_matrices/{i}_{uid}_node.png")
+
+    total_comm = deepcopy(comm_matrices[0])
+    for comm_matrix in comm_matrices[1:]:
+        for src in comm_matrix:
+            for dst in comm_matrix[src]:
+                total_comm[src][dst] = total_comm[src][dst] + comm_matrix[src][dst]
+
+    draw.draw_comm_matrix_by_core(total_comm, out_path=f"{args.outdir}/comm_matrices/total_{uid}_core.png")
+    draw.draw_comm_matrix_by_node(total_comm, out_path=f"{args.outdir}/comm_matrices/total_{uid}_node.png")
+
+    total_comm_df = pd.DataFrame(total_comm)
+    total_comm_df.to_csv(f"{args.outdir}/comm_matrices/total_{uid}.csv")
 
 if __name__=="__main__":
     argparser = argparse.ArgumentParser()
@@ -77,17 +102,3 @@ if __name__=="__main__":
     assert len(args.layers.split(",")) == 1 and args.layers != "all", "Only single layer is supported for trace visualization."
 
     visaulize_traces(args)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
