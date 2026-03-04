@@ -827,7 +827,7 @@ class MoE:
                     self.forward_distribute_dp(out_tensor, stats=stats)
                 else:
                     out_tensor = Tensor(
-                        f"{self.uid}_multicast_dp", 
+                        f"{self.uid}_combine_out_concat",
                         self.dist_info.rank,
                         dims=x.dims)
 
