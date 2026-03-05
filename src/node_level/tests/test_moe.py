@@ -124,8 +124,9 @@ def test_moe(bsz, ep, dp_attn, n_redundant_shared_exp, dtype):
             expected_network_data += len(combine_traffic[src_id][dst_id]) * seqlen * hidden_size * dtype_to_byte(dtype)
 
         dp_attn_cluster_size = len(dist_info.dp_attn_cluster)
-        if dist_info.is_dp_master():
-            expected_network_data += local_bsz * seqlen * hidden_size * dtype_to_byte(dtype) * (dp_attn_cluster_size-1)
+
+        
+        expected_network_data += len(dist_info.get_batch_dist_within_dp()) * seqlen * hidden_size * dtype_to_byte(dtype) * (dp_attn_cluster_size-1)
 
         assert expected_footprint == moe_layer.memory_footprint(), f"Expected memory_footprint {expected_footprint}, got {moe_layer.memory_footprint()}"
         assert expected_num_ops == op_num_ops, f"Expected num_ops {expected_num_ops}, got {op_num_ops}"

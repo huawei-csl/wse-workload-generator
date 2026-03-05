@@ -111,8 +111,12 @@ class DistInfo:
         dp_rank = self.batch_map["attn"][batch_id]
         local_batchids = [batch_id for batch_id, r in self.batch_map["attn"].items() if r == dp_rank]
         
-        return get_bucketid_from_itemid(batch_id-local_batchids[0], len(local_batchids), len(self.dp_attn_cluster))
+        dp_master_rank = self.get_dp_master(dp_rank, "attn")
 
+        rank_offset = get_bucketid_from_itemid(batch_id-local_batchids[0], len(local_batchids), len(self.dp_attn_cluster))
+
+        return dp_master_rank + rank_offset
+  
     def get_expert_mapping(self, n_experts):
         return {expert_id: get_bucketid_from_itemid(expert_id, n_experts, self.ep) for expert_id in range(n_experts)}
 
