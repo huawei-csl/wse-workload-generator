@@ -306,8 +306,8 @@ class MoE:
         batch_ids = self.dist_info.get_batch_dist_within_dp()
         
         # x has a batch size equal to the number of batch ids processed by this DP cluster. Substract an offset to get the correct slice indices
-        minibatch_offset = batch_ids[0]
         for batch_id in batch_ids:
+            minibatch_offset = batch_ids[0]
             x_slice = Slice(x, [batch_id-minibatch_offset], axis=0, uid=x.uid + f"_slice{batch_id}").forward(stats=stats)
 
             # get expert ids for this query
@@ -869,13 +869,16 @@ class MoE:
 
             dp_attn_rank = batch_mappings[batch_id]
             dp_attn_cluster = [k for k,v in self.dist_info.global_cfg.ranks["dp_attn"].items() if v == dp_attn_rank]
-            send_to = sorted(list(dict.fromkeys([node_id for node_id in mapped_to_nodes if node_id not in dp_attn_cluster])))
+            send_to = sorted(list(dict.fromkeys([node_id for node_id in mapped_to_nodes])))
 
             logging.info(f"Sample {batch_id} is mapped to expert {mapped_to_expert_ids}. These experts reside in nodes {mapped_to_nodes}. Nearest shared expert reside in {shared_expert_node_id}. Sample already exists in nodes {dp_attn_cluster}. It should be sent to {send_to}")
 
-            src = dp_attn_cluster[0]
+            src = self.dist_info.get_batchid_to_dispatch_src(batch_id)
+            src += dp_attn_cluster[0]
+
             for dst in send_to:
-                dispatch_traffic[src][dst].append(batch_id)
+                if dst != src:
+                    dispatch_traffic[src][dst].append(batch_id)
 
         logging.info("\n---- Dispatch Send ----\n")
 
