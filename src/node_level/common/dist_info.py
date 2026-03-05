@@ -3,6 +3,10 @@ import numpy as np
 import logging
 
 def get_itemids_from_bucketid(bucket_id, n_items, n_buckets):
+    ''' 
+        Distribute an array of n_items into n_buckets buckets and return the item ids that belong to the bucket with id bucket_id.
+        The items are distributed as evenly as possible among the buckets, with the first few buckets getting one extra item if n_items is not divisible by n_buckets.
+    '''
     assert bucket_id < n_buckets
 
     n_items_per_bucket_low = n_items // n_buckets
@@ -98,6 +102,11 @@ class DistInfo:
     def is_dp_master(self):
         return self.rank == self.dp_attn_cluster[0]
 
+    def get_batch_dist_within_dp(self):
+        local_batchids = self.get_local_batchids("attn")
+        _ids = get_itemids_from_bucketid(self.rank%len(self.dp_attn_cluster), len(local_batchids), len(self.dp_attn_cluster))
+        return [local_batchids[i] for i in _ids]
+    
     def get_expert_mapping(self, n_experts):
         return {expert_id: get_bucketid_from_itemid(expert_id, n_experts, self.ep) for expert_id in range(n_experts)}
 

@@ -303,8 +303,8 @@ class MoE:
     def forward_dispatch_multicast(self, x, stats):
         _, seqlen, hidden_dim = x.dims
         # batch ids processed by this DP cluster
-        batch_ids = self.dist_info.get_local_batchids("attn")
-
+        batch_ids = self.dist_info.get_batch_dist_within_dp()
+        
         # x has a batch size equal to the number of batch ids processed by this DP cluster. Substract an offset to get the correct slice indices
         minibatch_offset = batch_ids[0]
         for batch_id in batch_ids:
@@ -314,28 +314,24 @@ class MoE:
             mapping = get_moe_gate_model().get_mapping_by_batchids(self.uid, batch_id)
             logging.debug("batch_id: {}, mapping: {}".format(batch_id, mapping))
 
-            # after attention allreduce, each node within the DP cluster has identical data
-            # therefore, only the master node in the DP cluster dispatches the data to experts
-            # TODO: distribute this task to all nodes in the DP cluster for better load balancing
-            if self.dist_info.is_dp_master():
-                # calculate with nodes the experts are located
-                dst_nodes = [self.expertid_to_node[expert_id] for expert_id in mapping.tolist()]
+            # calculate with nodes the experts are located
+            dst_nodes = [self.expertid_to_node[expert_id] for expert_id in mapping.tolist()]
 
-                # Add shared expert node to the destination
-                dst_nodes.append(self.dist_info.batch_to_shared_exp[batch_id])
+            # Add shared expert node to the destination
+            dst_nodes.append(self.dist_info.batch_to_shared_exp[batch_id])
 
-                # remove repeating nodes from dst_nodes
-                dst_nodes = list(dict.fromkeys(dst_nodes))
+            # remove repeating nodes from dst_nodes
+            dst_nodes = list(dict.fromkeys(dst_nodes))
 
-                # remove the nodes from the same DP cluster as they already have the data
-                dst_nodes = [node for node in dst_nodes if node not in self.dist_info.dp_attn_cluster]
+            # remove itself from dst_nodes
+            dst_nodes = [node for node in dst_nodes if node != self.dist_info.rank]
 
-                # sort the dst_nodes for consistent ordering
-                dst_nodes = sorted(dst_nodes)
+            # sort the dst_nodes for consistent ordering
+            dst_nodes = sorted(dst_nodes)
 
-                if len(dst_nodes) > 0:
-                    Multicast(self.uid+"_multicast_exp_"+str(batch_id), dims=x_slice.dims, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(
-                        x_slice, stats=stats)
+            if len(dst_nodes) > 0:
+                Multicast(self.uid+"_multicast_exp_"+str(batch_id), dims=x_slice.dims, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(
+                    x_slice, stats=stats)
 
         Barrier(self.uid+"_barrier", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
 
