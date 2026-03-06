@@ -95,7 +95,6 @@ class DSv3DecodeLayer:
         x = self.ffn.forward(x, stats=stats)
 
         return x
-        return Tensor(self.layer_id+"_out", self.dist_info.rank, x.dims)
 
     def memory_footprint(self, bsz, ctx_len):
         batch_ids = self.dist_info.get_local_batchids("attn")

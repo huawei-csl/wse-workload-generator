@@ -55,8 +55,6 @@ class MoE:
 
 
     def calc_combine_allgather_traffic(self):
-        batch_mappings = self.dist_info.batch_map["attn"]
-
         expert_routings = get_moe_gate_model().get_expert_routings(layer_id=self.uid)
 
         outputs = {}
@@ -83,8 +81,6 @@ class MoE:
                 self.combine_traffic[src_id][dst_id] = list(outputs[src_id])
 
     def calc_combine_multicast_traffic(self):
-        batch_mappings = self.dist_info.batch_map["attn"]
-
         expert_routings = get_moe_gate_model().get_expert_routings(layer_id=self.uid)
 
         outputs = {}
@@ -135,7 +131,7 @@ class MoE:
 
         for e in self.experts:
             recv_batch_ids = self.get_batchids_by_expert(e)
-            batch_mappings = self.dist_info.batch_map["attn"]
+            batch_mappings = self.dist_info.batch_map_dp_rank["attn"]
 
             recv_buff = []
             for batch_id in recv_batch_ids:
@@ -258,8 +254,9 @@ class MoE:
             recv_batch_ids = self.get_batchids_by_expert(e)
             if len(recv_batch_ids) > 0:
                 for batch_id in recv_batch_ids:
-                    dp_rank = self.dist_info.get_dp_rank_from_batchids([batch_id], "attn")[0]
-                    src_id = self.dist_info.get_dp_master(dp_rank, "attn")
+                    # dp_rank = self.dist_info.get_dp_rank_from_batchids([batch_id], "attn")[0]
+                    # src_id = self.dist_info.get_dp_master(dp_rank, "attn")
+                    src_id = self.dist_info.get_batchid_to_dispatch_src(batch_id)
 
                     ind = send_matrix[src_id][self.rank].index(batch_id)
                     x_recv_slice = Slice(
@@ -280,8 +277,9 @@ class MoE:
             batch_ids_for_shared = self.get_batchids_by_expert("shared")
             if len(batch_ids_for_shared) > 0:
                 for batch_id in batch_ids_for_shared:
-                    dp_rank = self.dist_info.get_dp_rank_from_batchids([batch_id], "attn")[0]
-                    src_id = self.dist_info.get_dp_master(dp_rank, "attn")
+                    # dp_rank = self.dist_info.get_dp_rank_from_batchids([batch_id], "attn")[0]
+                    # src_id = self.dist_info.get_dp_master(dp_rank, "attn")
+                    src_id = self.dist_info.get_batchid_to_dispatch_src(batch_id)
 
                     ind = send_matrix[src_id][self.rank].index(batch_id)
                     x_recv_slice = Slice(
@@ -396,6 +394,9 @@ class MoE:
 
 
     def forward_combine_alltoall(self, exp_outs, stats):
+        # TODO: Support seqlen > 1
+        seqlen = 1
+
         send_matrix = self.dist_info.get_combine_comm_matrix(self.uid, get_moe_gate_model(), self.n_experts)
 
         x_send_buff = []
@@ -421,8 +422,7 @@ class MoE:
                     Tensor(
                         f"{self.uid}_empty_tensor_{dst_node}", 
                         self.dist_info.rank, 
-                        [0, exp_outs[next(iter(exp_outs))].dims[1], 
-                         exp_outs[next(iter(exp_outs))].dims[2]]
+                        [0, seqlen, self.hidden_size]
                     )
                 )
 
@@ -431,12 +431,10 @@ class MoE:
         input_split = [len(send_matrix[self.rank][dst_node_id]) for dst_node_id in send_matrix[self.rank]]
         output_split = [len(send_matrix[src_node_id][self.rank]) for src_node_id in range(self.dist_info.num_nodes)]
         
-        if self.dist_info.is_dp_master():
-            assert sum(output_split) == len(self.dist_info.get_local_batchids("attn")) * (self.num_experts_per_tok + self.n_shared_experts)
-        else:
-            assert sum(output_split) == 0
-
-        _, seqlen, hidden_dim = next(iter(exp_outs.values())).dims
+        # if self.dist_info.is_dp_master():
+        #     assert sum(output_split) == len(self.dist_info.get_local_batchids("attn")) * (self.num_experts_per_tok + self.n_shared_experts)
+        # else:
+        #     assert sum(output_split) == 0
         
         alltoall_combine = AllToAllv(
             self.uid + "_combine_a2a",
@@ -452,8 +450,6 @@ class MoE:
         if len(exp_outs) == 0:
             return 
         
-        _, seqlen, hidden_dim = next(iter(exp_outs.values())).dims
-
         # after MoE layer, gather the outputs in specific nodes to sum them
         # at the moment, we gather them at the dp master of each DP cluster
         # we merge all unicasts to the same dst node
@@ -536,7 +532,6 @@ class MoE:
 
                 exp_input_batch_ids = self.get_batchids_by_expert(expert_id)
                 buff_ind = exp_input_batch_ids.index(batch_id)
-                # uid = f"{exp_outs[expert_id].uid}_node{src_id}_slice{buff_ind}"
 
                 recv_buffer = Tensor(f"{self.uid}_combine_concat_ag_{src_id}", self.dist_info.rank, [len(exp_input_batch_ids), seqlen, hidden_dim])
 
@@ -548,7 +543,6 @@ class MoE:
             recv_buffer = Tensor(f"{self.uid}_combine_concat_ag_{src_id}", self.dist_info.rank, [len(self.combine_traffic[src_id][self.dist_info.rank]), seqlen, hidden_dim])
 
             buff_offset = [v == src_id for v in self.dist_info.batch_to_shared_exp.values()].index(True)
-            # uid = f"{exp_outs['shared'].uid}_node{src_id}_slice{buff_ind}"
             exp_outs_to_recv.append(
                 Slice(recv_buffer, [batch_id-buff_offset], axis=0, uid=recv_buffer.uid + f"_shared_slice{batch_id-buff_offset}").forward(stats=stats)
             )
@@ -575,18 +569,17 @@ class MoE:
 
         return out_batch
 
-
-
-
     def forward_combine_alltoall_add(self, exp_outs, stats):
-        _, seqlen, hidden_dim = next(iter(exp_outs.values())).dims
+        # TODO: Support seqlen > 1
+        seqlen = 1
 
-        batch_ids = self.dist_info.get_local_batchids("attn")
+        # batch_ids = self.dist_info.get_local_batchids("attn")
+        batch_ids = self.dist_info.get_batch_dist_within_dp()
 
         recv_buffer = {}
         for src_id in self.combine_traffic:
             if self.dist_info.rank in self.combine_traffic[src_id]:
-                recv_buffer[src_id] = Tensor(f"{self.uid}_combine_a2a_{src_id}", self.dist_info.rank, [len(self.combine_traffic[src_id][self.dist_info.rank]), seqlen, hidden_dim])
+                recv_buffer[src_id] = Tensor(f"{self.uid}_combine_a2a_{src_id}", self.dist_info.rank, [len(self.combine_traffic[src_id][self.dist_info.rank]), seqlen, self.hidden_size])
         
         out_sums = []
         for batch_id in batch_ids:
@@ -779,7 +772,6 @@ class MoE:
 
             # compute the outputs for each local expert
             exp_outs = self.forward_compute_experts(expert_recv_buffs, stats=stats)
-
         else:
             exp_outs = self.forward_compute_expert_noep(x, stats=stats)
 
@@ -843,7 +835,7 @@ class MoE:
 
         # A dict that store the batch id to expert id mapping for each DP cluster
         # key: batch id, value: dp attn rank
-        batch_mappings = self.dist_info.batch_map["attn"]
+        batch_mappings = self.dist_info.batch_map_dp_rank["attn"]
 
         # A 2-D array that store the expert routing for each token
         # shape: (num_experts_per_token, global_bsz)
@@ -942,7 +934,7 @@ class MoE:
             dp_attn_rank = self.dist_info.global_cfg.ranks["dp_attn"][node_id]
             dp_attn_cluster = [k for k,v in self.dist_info.global_cfg.ranks["dp_attn"].items() if v == dp_attn_rank]
             if node_id == dp_attn_cluster[0]:
-                batch_ids = [batch_id for batch_id in range(global_bsz) if self.dist_info.batch_map["attn"][batch_id] == dp_attn_rank]
+                batch_ids = [batch_id for batch_id in range(global_bsz) if self.dist_info.batch_map_dp_rank["attn"][batch_id] == dp_attn_rank]
 
                 for batch_id in batch_ids:
                     mapped_to_expert_ids = expert_routings[:, batch_id]
@@ -953,7 +945,7 @@ class MoE:
             dp_attn_rank = self.dist_info.global_cfg.ranks["dp_attn"][node_id]
             dp_attn_cluster = [k for k,v in self.dist_info.global_cfg.ranks["dp_attn"].items() if v == dp_attn_rank]
             if node_id == dp_attn_cluster[0]:
-                batch_ids = [batch_id for batch_id in range(global_bsz) if self.dist_info.batch_map["attn"][batch_id] == dp_attn_rank]
+                batch_ids = [batch_id for batch_id in range(global_bsz) if self.dist_info.batch_map_dp_rank["attn"][batch_id] == dp_attn_rank]
 
                 for batch_id in batch_ids:
                     logging.info(

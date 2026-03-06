@@ -76,7 +76,7 @@ class DistInfo:
 
         # map batch id to dp rank for attention and ffn layers
         # structure: {"attn": {batch_id: dp_rank}, "ffn": {batch_id: dp_rank}}
-        self.batch_map = None
+        self.batch_map_dp_rank = None
 
         # stores which batch is mapped to which shared expert copy
         # structure: {batch_id: node_id of shared expert}
@@ -108,8 +108,8 @@ class DistInfo:
         return [local_batchids[i] for i in _ids]
     
     def get_batchid_to_dispatch_src(self, batch_id):
-        dp_rank = self.batch_map["attn"][batch_id]
-        local_batchids = [batch_id for batch_id, r in self.batch_map["attn"].items() if r == dp_rank]
+        dp_rank = self.batch_map_dp_rank["attn"][batch_id]
+        local_batchids = [batch_id for batch_id, r in self.batch_map_dp_rank["attn"].items() if r == dp_rank]
         
         dp_master_rank = self.get_dp_master(dp_rank, "attn")
 
@@ -123,13 +123,13 @@ class DistInfo:
     def batch_mapping(self, bsz):
         assert bsz >= self.dp_attn and bsz >= self.dp_ffn, "Batch size must be larger than dp_attn and dp_ffn"
 
-        self.batch_map = {"attn": {}, "ffn": {}}
+        self.batch_map_dp_rank = {"attn": {}, "ffn": {}}
 
         for rank_dp_attn in range(self.dp_attn):
-            self.batch_map["attn"].update({batch_id:rank_dp_attn for batch_id in get_itemids_from_bucketid(rank_dp_attn, bsz, self.dp_attn)})
+            self.batch_map_dp_rank["attn"].update({batch_id:rank_dp_attn for batch_id in get_itemids_from_bucketid(rank_dp_attn, bsz, self.dp_attn)})
 
         for rank_dp_ffn in range(self.dp_ffn):
-            self.batch_map["ffn"].update({batch_id:rank_dp_ffn for batch_id in get_itemids_from_bucketid(rank_dp_ffn, bsz, self.dp_ffn)})
+            self.batch_map_dp_rank["ffn"].update({batch_id:rank_dp_ffn for batch_id in get_itemids_from_bucketid(rank_dp_ffn, bsz, self.dp_ffn)})
 
         self.batch_to_shared_exp = {}
         for batch_id in range(bsz):
@@ -142,13 +142,13 @@ class DistInfo:
 
     def get_dp_rank_from_batchids(self, batch_ids, layer_type):
         assert layer_type in ["attn", "ffn"], "layer_type must be either 'attn' or 'ffn'"
-        return [self.batch_map[layer_type][batch_id] for batch_id in batch_ids]
+        return [self.batch_map_dp_rank[layer_type][batch_id] for batch_id in batch_ids]
 
     def get_local_batchids(self, layer_type):
         ''' batch ids that are mapped to the current node's dp cluster '''
         assert layer_type in ["attn", "ffn"], "layer_type must be either 'attn' or 'ffn'"
         rank_dp = self.rank_dp_attn if layer_type == "attn" else self.rank_dp_ffn
-        return [batch_id for batch_id, r in self.batch_map[layer_type].items() if r == rank_dp]
+        return [batch_id for batch_id, r in self.batch_map_dp_rank[layer_type].items() if r == rank_dp]
 
     def get_dp_master(self, dp_rank, layer_type):
         assert layer_type in ["attn", "ffn"], "layer_type must be either 'attn' or 'ffn'"
@@ -160,21 +160,24 @@ class DistInfo:
 
         send_matrix = {src_id: {dst_id: [] for dst_id in range(self.num_nodes)} for src_id in range(self.num_nodes)}
         for rank, dp_attn_rank in self.global_cfg.ranks["dp_attn"].items():
-            if rank == self.get_dp_master(dp_attn_rank, "attn"):
-                batch_ids = [batch_id for batch_id, r in self.batch_map["attn"].items() if r == dp_attn_rank]
+            # if rank == self.get_dp_master(dp_attn_rank, "attn"):
+            batch_ids = [batch_id for batch_id, r in self.batch_map_dp_rank["attn"].items() if r == dp_attn_rank]
 
-                for batch_id in batch_ids:
-                    expert_ids = moe_gate_model.get_mapping_by_batchids(layer_id, batch_id)
+            for batch_id in batch_ids:
+                if rank != self.get_batchid_to_dispatch_src(batch_id):
+                    continue
 
-                    for expert_id in expert_ids:
-                        expert_node = expert_map[expert_id]
-                        if batch_id not in send_matrix[rank][expert_node]:
-                            send_matrix[rank][expert_node].append(batch_id)
+                expert_ids = moe_gate_model.get_mapping_by_batchids(layer_id, batch_id)
 
-                    shared_node = self.batch_to_shared_exp[batch_id]
-                    if batch_id not in send_matrix[rank][shared_node]:
-                        send_matrix[rank][shared_node].append(batch_id)
-                    
+                for expert_id in expert_ids:
+                    expert_node = expert_map[expert_id]
+                    if batch_id not in send_matrix[rank][expert_node]:
+                        send_matrix[rank][expert_node].append(batch_id)
+
+                shared_node = self.batch_to_shared_exp[batch_id]
+                if batch_id not in send_matrix[rank][shared_node]:
+                    send_matrix[rank][shared_node].append(batch_id)
+        
         return send_matrix
     
     def get_combine_comm_matrix(self, layer_id, moe_gate_model, n_experts):
@@ -182,17 +185,20 @@ class DistInfo:
 
         send_matrix = {src_id: {dst_id: [] for dst_id in range(self.num_nodes)} for src_id in range(self.num_nodes)}
         for rank, dp_attn_rank in self.global_cfg.ranks["dp_attn"].items():
-            if rank == self.get_dp_master(dp_attn_rank, "attn"):
-                batch_ids = [batch_id for batch_id, r in self.batch_map["attn"].items() if r == dp_attn_rank]
+            # if rank == self.get_dp_master(dp_attn_rank, "attn"):
+            batch_ids = [batch_id for batch_id, r in self.batch_map_dp_rank["attn"].items() if r == dp_attn_rank]
 
-                for batch_id in batch_ids:
-                    expert_ids = moe_gate_model.get_mapping_by_batchids(layer_id, batch_id)
+            for batch_id in batch_ids:
+                if rank != self.get_batchid_to_dispatch_src(batch_id):
+                    continue
+        
+                expert_ids = moe_gate_model.get_mapping_by_batchids(layer_id, batch_id)
 
-                    for expert_id in expert_ids:
-                        expert_node = expert_map[expert_id]
-                        send_matrix[expert_node][rank].append((batch_id, expert_id))
+                for expert_id in expert_ids:
+                    expert_node = expert_map[expert_id]
+                    send_matrix[expert_node][rank].append((batch_id, expert_id))
 
-                    shared_node = self.batch_to_shared_exp[batch_id]
-                    send_matrix[shared_node][rank].append((batch_id, "shared"))
+                shared_node = self.batch_to_shared_exp[batch_id]
+                send_matrix[shared_node][rank].append((batch_id, "shared"))
 
         return send_matrix

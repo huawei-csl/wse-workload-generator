@@ -1,4 +1,4 @@
-
+import torch
 import numpy as np
 import matplotlib.pyplot as plt 
 import logging 
@@ -10,7 +10,8 @@ class MoEGateModel:
     def __init__(self, num_experts_per_tok, n_routed_experts, layer_ids, workload_model) -> None:
         self.num_experts_per_tok = num_experts_per_tok
         self.n_routed_experts = n_routed_experts
-        self.layer_ids = [self.strip_layerid(layer_id) for layer_id in layer_ids]
+        # self.layer_ids = [self.strip_layerid(layer_id) for layer_id in layer_ids]
+        self.layer_ids = layer_ids
         self.workload_model = workload_model
 
         if workload_model == "uniform":
@@ -62,6 +63,13 @@ class MoEGateModel:
                 self.expert_routings[self.iter_id][layer_id] = np.zeros(shape=[self.num_experts_per_tok, bsz*seqlen], dtype=np.int32)
                 for i in range(bsz*seqlen):
                     self.expert_routings[self.iter_id][layer_id][:, i] = np.random.choice(a=np.arange(0,self.n_routed_experts), size=[self.num_experts_per_tok], replace=False, p=self.probs[layer_id])
+                
+                # logging.info(f"Sampling expert activations for {layer_id}...")
+                # self.expert_routings[self.iter_id][layer_id] = torch.multinomial(
+                #     input=torch.tensor(self.probs[layer_id]).expand(bsz*seqlen, -1),
+                #     num_samples = self.num_experts_per_tok,
+                #     replacement = False
+                # ).T
         else:
             raise NotImplementedError
         
@@ -70,7 +78,8 @@ class MoEGateModel:
         return "_".join(layer_id.split("_")[1:])
 
     def get_expert_routings(self, layer_id):
-        return self.expert_routings[self.iter_id][self.strip_layerid(layer_id)]
+        # return self.expert_routings[self.iter_id][self.strip_layerid(layer_id)]
+        return self.expert_routings[self.iter_id][layer_id]
 
     def get_activated_experts(self, layer_id):
         expert_routings = self.get_expert_routings(layer_id)

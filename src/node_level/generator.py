@@ -1,5 +1,3 @@
-
-
 from src.node_level.common.tensor import Tensor
 from src.node_level.common.compute_graph import reset_compute_graph
 
@@ -12,7 +10,7 @@ class Generator:
 
         ## PREFILL
         for model in models:
-            queries = Tensor("queries", [bsz, prefill_len, model.hidden_size])
+            queries = Tensor("queries", model.dist_info.rank, [bsz, prefill_len, model.hidden_size])
             model.forward(queries, ctx_len=0, iter_id=0)
 
     def decode(self, models, bsz, prefill_len, decode_len, simplified_decode):
@@ -30,4 +28,3 @@ class Generator:
 
                 queries = Tensor("queries", model.dist_info.rank, [bsz, seqlen_q, model.hidden_size])
                 model.forward(queries, ctx_len=ctx_len, iter_id=i+1)
-                # model.layers[0].attention.MLA_absorb.calc_expected(bsz, seqlen_q, ctx_len)

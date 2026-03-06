@@ -57,7 +57,7 @@ if __name__=="__main__":
 
     generator = Generator()
     if not args.only_decode:
-        raise NotImplementedError("Prefill phase is not implemented yet, ask for support.")
+        # raise NotImplementedError("Prefill phase is not implemented yet, ask for support.")
     
         prefill_cfg = SystemConfig().from_json(args.system_config, mode="prefill")
         nodes = nodes_to_simulate(args.nodes, prefill_cfg.num_nodes)
