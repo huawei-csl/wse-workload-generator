@@ -13,25 +13,24 @@ from src.node_level.common.workload import get_moe_gate_model, reset_moe_gate_mo
 
 
 @pytest.mark.parametrize(
-    "bsz,ep,dp_attn,n_redundant_shared_exp,dtype", 
+    "bsz,seqlen,ep,dp_attn,n_redundant_shared_exp,dtype", 
     [
-        (1, 1, 1, 1, "fp16"), # single-node test case
-        (1, 8, 1, 1, "fp16"), # single-batch test case
-        (4, 8, 1, 1, "fp16"), # multi-batch test case
-        (128, 8, 1, 1, "fp16"), # large-batch test case
-        (128, 8, 2, 1, "fp16"), # dp_attn > 1
-        (128, 8, 8, 1, "fp16"), # dp_attn == ep
-        (128, 8, 2, 2, "fp16"), # with redundant shared experts
-        (128, 8, 2, 8, "fp16"), # each node has a redundant shared expert
-        (128, 56, 14, 4, "fp16"), # unbalanced num local experts
-        (128, 56, 14, 4, "fp8"), # fp8
+        (1, 1, 1, 1, 1, "fp16"), # single-node test case
+        (1, 1, 8, 1, 1, "fp16"), # single-batch test case
+        (4, 1, 8, 1, 1, "fp16"), # multi-batch test case
+        (128, 1, 8, 1, 1, "fp16"), # large-batch test case
+        (128, 1, 8, 2, 1, "fp16"), # dp_attn > 1
+        (128, 1, 8, 8, 1, "fp16"), # dp_attn == ep
+        (128, 1, 8, 2, 2, "fp16"), # with redundant shared experts
+        (128, 1, 8, 2, 8, "fp16"), # each node has a redundant shared expert
+        (128, 1, 56, 14, 4, "fp16"), # unbalanced num local experts
+        (128, 1, 56, 14, 4, "fp8"), # fp8
+        (128, 4, 56, 14, 4, "fp8"), # seqlen > 1
     ], 
 )
-def test_moe(bsz, ep, dp_attn, n_redundant_shared_exp, dtype):
+def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, dtype):
     reset_moe_gate_model()
     reset_compute_graph()
-
-    seqlen = 1
 
     hidden_size = 7168
     moe_intermediate_size = 2048
@@ -110,22 +109,20 @@ def test_moe(bsz, ep, dp_attn, n_redundant_shared_exp, dtype):
 
         batch_ids_for_shared = [batch_id for batch_id, mapped_shared in dist_info.batch_to_shared_exp.items() if dist_info.rank == mapped_shared]
         if rank in dist_info.shared_expert_ranks:
-            expected_num_ops += 3 * len(batch_ids_for_shared) * hidden_size * (moe_intermediate_size * n_shared_experts)
+            expected_num_ops += 3 * len(batch_ids_for_shared) * seqlen * hidden_size * (moe_intermediate_size * n_shared_experts)
             expected_hbm_reads += 3 * hidden_size * (moe_intermediate_size * n_shared_experts) * dtype_to_byte(dtype) # weights
 
-        dispatch_traffic, combine_traffic = moe_layer.routings_summary()
+        dispatch_traffic, combine_traffic = moe_layer.routings_summary(seqlen)
 
         expected_network_data = 0
         src_id = rank
         for dst_id in range(len(dispatch_traffic)):
-            expected_network_data += len(dispatch_traffic[src_id][dst_id]) * seqlen * hidden_size * dtype_to_byte(dtype)
+            expected_network_data += len(dispatch_traffic[src_id][dst_id]) * hidden_size * dtype_to_byte(dtype)
 
         for dst_id in range(len(combine_traffic)):
-            expected_network_data += len(combine_traffic[src_id][dst_id]) * seqlen * hidden_size * dtype_to_byte(dtype)
+            expected_network_data += len(combine_traffic[src_id][dst_id]) * hidden_size * dtype_to_byte(dtype)
 
         dp_attn_cluster_size = len(dist_info.dp_attn_cluster)
-
-        
         expected_network_data += len(dist_info.get_batch_dist_within_dp()) * seqlen * hidden_size * dtype_to_byte(dtype) * (dp_attn_cluster_size-1)
 
         assert expected_footprint == moe_layer.memory_footprint(), f"Expected memory_footprint {expected_footprint}, got {moe_layer.memory_footprint()}"
@@ -136,9 +133,10 @@ def test_moe(bsz, ep, dp_attn, n_redundant_shared_exp, dtype):
 
 if __name__=="__main__":
     test_moe(
-        bsz=1,
-        ep=8,
-        dp_attn=1,
-        n_redundant_shared_exp=1,
-        dtype="fp16"
+        bsz=128,
+        seqlen=2,
+        ep=56,
+        dp_attn=14,
+        n_redundant_shared_exp=4,
+        dtype="fp8"
     )

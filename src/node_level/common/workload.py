@@ -56,20 +56,15 @@ class MoEGateModel:
             self.expert_routings[self.iter_id] = {}
             for layer_id in self.layer_ids:
                 np.random.shuffle(routings)
-                self.expert_routings[self.iter_id][layer_id] = routings.reshape([self.num_experts_per_tok, bsz*seqlen])
+                self.expert_routings[self.iter_id][layer_id] = routings.reshape([self.num_experts_per_tok, bsz, seqlen])
+
         elif self.workload_model in ["empirical_mmlu", "uniform"]:
             self.expert_routings[self.iter_id] = {}
             for layer_id in self.layer_ids:
-                self.expert_routings[self.iter_id][layer_id] = np.zeros(shape=[self.num_experts_per_tok, bsz*seqlen], dtype=np.int32)
-                for i in range(bsz*seqlen):
-                    self.expert_routings[self.iter_id][layer_id][:, i] = np.random.choice(a=np.arange(0,self.n_routed_experts), size=[self.num_experts_per_tok], replace=False, p=self.probs[layer_id])
-                
-                # logging.info(f"Sampling expert activations for {layer_id}...")
-                # self.expert_routings[self.iter_id][layer_id] = torch.multinomial(
-                #     input=torch.tensor(self.probs[layer_id]).expand(bsz*seqlen, -1),
-                #     num_samples = self.num_experts_per_tok,
-                #     replacement = False
-                # ).T
+                self.expert_routings[self.iter_id][layer_id] = np.zeros(shape=[self.num_experts_per_tok, bsz, seqlen], dtype=np.int32)
+                for i in range(bsz):
+                    for j in range(seqlen):
+                        self.expert_routings[self.iter_id][layer_id][:, i, j] = np.random.choice(a=np.arange(0,self.n_routed_experts), size=[self.num_experts_per_tok], replace=False, p=self.probs[layer_id])
         else:
             raise NotImplementedError
         
