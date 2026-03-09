@@ -61,10 +61,12 @@ class MoEGateModel:
         elif self.workload_model in ["empirical_mmlu", "uniform"]:
             self.expert_routings[self.iter_id] = {}
             for layer_id in self.layer_ids:
-                self.expert_routings[self.iter_id][layer_id] = np.zeros(shape=[self.num_experts_per_tok, bsz, seqlen], dtype=np.int32)
-                for i in range(bsz):
-                    for j in range(seqlen):
-                        self.expert_routings[self.iter_id][layer_id][:, i, j] = np.random.choice(a=np.arange(0,self.n_routed_experts), size=[self.num_experts_per_tok], replace=False, p=self.probs[layer_id])
+                self.expert_routings[self.iter_id][layer_id] = torch.multinomial(
+                    torch.tensor(self.probs[layer_id]).expand(bsz * seqlen, -1), 
+                    num_samples=self.num_experts_per_tok, 
+                    replacement=False
+                ).T.reshape(self.num_experts_per_tok, bsz, seqlen).numpy()
+                
         else:
             raise NotImplementedError
         
