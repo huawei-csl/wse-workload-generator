@@ -844,7 +844,7 @@ class MoE:
         # shape: (num_experts_per_token, global_bsz)
         expert_routings = get_moe_gate_model().get_expert_routings(layer_id=self.uid)
         
-        logging.info("\n---- Mapping ----\n")
+        logging.debug("\n---- Mapping ----\n")
 
         dispatch_traffic = [[[] for j in range(self.dist_info.num_nodes)] for i in range(self.dist_info.num_nodes)]
         for batch_id in range(global_bsz):
@@ -860,7 +860,7 @@ class MoE:
                 dp_attn_cluster = [k for k,v in self.dist_info.global_cfg.ranks["dp_attn"].items() if v == dp_attn_rank]
                 send_to = sorted(list(dict.fromkeys([node_id for node_id in mapped_to_nodes])))
 
-                logging.info(f"Sample {batch_id} is mapped to expert {mapped_to_expert_ids}. These experts reside in nodes {mapped_to_nodes}. Nearest shared expert reside in {shared_expert_node_id}. Sample already exists in nodes {dp_attn_cluster}. It should be sent to {send_to}")
+                logging.debug(f"Sample {batch_id} is mapped to expert {mapped_to_expert_ids}. These experts reside in nodes {mapped_to_nodes}. Nearest shared expert reside in {shared_expert_node_id}. Sample already exists in nodes {dp_attn_cluster}. It should be sent to {send_to}")
 
                 src = self.dist_info.get_batchid_to_dispatch_src(batch_id)
 
@@ -868,27 +868,27 @@ class MoE:
                     if dst != src:
                         dispatch_traffic[src][dst].append((batch_id, seq_id))
 
-        logging.info("\n---- Dispatch Send ----\n")
+        logging.debug("\n---- Dispatch Send ----\n")
 
         for src_id in range(self.dist_info.num_nodes):
             for dst_id in range(self.dist_info.num_nodes):
                 if len(dispatch_traffic[src_id][dst_id]) > 0:
-                    logging.info(f"Node {src_id} sends {len(dispatch_traffic[src_id][dst_id])} samples to node {dst_id}: {dispatch_traffic[src_id][dst_id]}")
+                    logging.debug(f"Node {src_id} sends {len(dispatch_traffic[src_id][dst_id])} samples to node {dst_id}: {dispatch_traffic[src_id][dst_id]}")
 
-        logging.info("\n---- Dispatch Receive ----\n")
+        logging.debug("\n---- Dispatch Receive ----\n")
 
         for dst_id in range(self.dist_info.num_nodes):
             for src_id in range(self.dist_info.num_nodes):
                 if len(dispatch_traffic[src_id][dst_id]) > 0:
-                    logging.info(f"Node {dst_id} receives {len(dispatch_traffic[src_id][dst_id])} samples from node {src_id}: {dispatch_traffic[src_id][dst_id]}")
+                    logging.debug(f"Node {dst_id} receives {len(dispatch_traffic[src_id][dst_id])} samples from node {src_id}: {dispatch_traffic[src_id][dst_id]}")
 
-        logging.info("\n---- Expert Processing ----\n")
+        logging.debug("\n---- Expert Processing ----\n")
 
         outputs = {}
         for expert_id in range(self.n_experts):
             # batch_ids = sorted(np.where(expert_routings==expert_id)[1])
             batch_ids = list(zip(*np.where(expert_routings==expert_id)[1:])) # get batch_id and seq_id pairs
-            logging.info(f"Expert {expert_id} on node {self.expertid_to_node[expert_id]} processes {len(batch_ids)} samples: {batch_ids}")
+            logging.debug(f"Expert {expert_id} on node {self.expertid_to_node[expert_id]} processes {len(batch_ids)} samples: {batch_ids}")
 
             node_id = self.expertid_to_node[expert_id]
             if node_id not in outputs:
@@ -899,7 +899,7 @@ class MoE:
             batch_ids = [batch_id for batch_id, shared_expert_node_id in self.dist_info.batch_to_shared_exp.items() if shared_expert_node_id == node_id]
             batch_ids = [(batch_id, seq_id) for batch_id in batch_ids for seq_id in range(seqlen)]
             if len(batch_ids) > 0:
-                logging.info(f"Shared expert on node {node_id} processes {len(batch_ids)} samples: {batch_ids}")
+                logging.debug(f"Shared expert on node {node_id} processes {len(batch_ids)} samples: {batch_ids}")
 
                 if node_id not in outputs:
                     outputs[node_id] = []
@@ -907,9 +907,9 @@ class MoE:
         
         for node_id in outputs:
             output_ids = ", ".join(f"{expert_id}_{batch_id}_{seq_id}" for expert_id, batch_id, seq_id in outputs[node_id])
-            logging.info(f"Node {node_id} produced outputs (e_s): {output_ids}")
+            logging.debug(f"Node {node_id} produced outputs (e_s): {output_ids}")
 
-        logging.info("\n---- Combine Traffic Send ----\n")
+        logging.debug("\n---- Combine Traffic Send ----\n")
         combine_traffic = [[[] for j in range(self.dist_info.num_nodes)] for i in range(self.dist_info.num_nodes)]
         for node_id in outputs:
             for expert_id, batch_id, seq_id in outputs[node_id]:
@@ -919,23 +919,23 @@ class MoE:
                 dst = self.dist_info.get_batchid_to_dispatch_src(batch_id)
 
                 if node_id != dst:
-                    logging.info(f"Node {node_id} sends output {expert_id}_{batch_id}_{seq_id} back to DP cluster {dst}")
+                    logging.debug(f"Node {node_id} sends output {expert_id}_{batch_id}_{seq_id} back to DP cluster {dst}")
                     combine_traffic[node_id][dst].append((expert_id, batch_id, seq_id))
 
         for src_id in range(self.dist_info.num_nodes):
             for dst_id in range(self.dist_info.num_nodes):
                 if len(combine_traffic[src_id][dst_id]) > 0:
                     output_ids = ", ".join([f"{expert_id}_{batch_id}_{seq_id}" for expert_id, batch_id, seq_id in combine_traffic[src_id][dst_id]])
-                    logging.info(f"Node {src_id} sends {len(combine_traffic[src_id][dst_id])} outputs to node {dst_id}: {output_ids}")
+                    logging.debug(f"Node {src_id} sends {len(combine_traffic[src_id][dst_id])} outputs to node {dst_id}: {output_ids}")
 
-        logging.info("\n---- Combine Traffic Receive ----\n")
+        logging.debug("\n---- Combine Traffic Receive ----\n")
         for dst_id in range(self.dist_info.num_nodes):
             for src_id in range(self.dist_info.num_nodes):
                 if len(combine_traffic[src_id][dst_id]) > 0:
                     output_ids = ", ".join([f"{expert_id}_{batch_id}_{seq_id}" for expert_id, batch_id, seq_id in combine_traffic[src_id][dst_id]])
-                    logging.info(f"Node {dst_id} receives {len(combine_traffic[src_id][dst_id])} outputs from node {src_id}: {output_ids}")        
+                    logging.debug(f"Node {dst_id} receives {len(combine_traffic[src_id][dst_id])} outputs from node {src_id}: {output_ids}")        
 
-        logging.info("\n---- Weighted Sum ----\n")
+        logging.debug("\n---- Weighted Sum ----\n")
         for node_id in range(self.dist_info.num_nodes):
             dp_attn_rank = self.dist_info.global_cfg.ranks["dp_attn"][node_id]
             batch_ids = [batch_id for batch_id in range(global_bsz) if self.dist_info.batch_map_dp_rank["attn"][batch_id] == dp_attn_rank]
@@ -945,9 +945,9 @@ class MoE:
                 if node_id == src_id:
                     for seq_id in range(seqlen):
                         mapped_to_expert_ids = expert_routings[:, batch_id, seq_id]
-                        logging.info(f"Node {node_id} performs weighted sum for sample {batch_id}_{seq_id} with expert outputs: ", [f"{expert_id}_{batch_id}_{seq_id}" for expert_id in mapped_to_expert_ids])
+                        logging.debug(f"Node {node_id} performs weighted sum for sample {batch_id}_{seq_id} with expert outputs: " + " ".join([f"{expert_id}_{batch_id}_{seq_id}" for expert_id in mapped_to_expert_ids]))
 
-        logging.info("\n---- Distribute within DP cluster ----\n")
+        logging.debug("\n---- Distribute within DP cluster ----\n")
         for node_id in range(self.dist_info.num_nodes):
             dp_attn_rank = self.dist_info.global_cfg.ranks["dp_attn"][node_id]
             batch_ids = [batch_id for batch_id in range(global_bsz) if self.dist_info.batch_map_dp_rank["attn"][batch_id] == dp_attn_rank]
@@ -956,7 +956,7 @@ class MoE:
                 src_id = self.dist_info.get_batchid_to_dispatch_src(batch_id)
                 if node_id == src_id:
                     for seq_id in range(seqlen):
-                        logging.info(
+                        logging.debug(
                             f"Node {node_id} sends output for sample {batch_id}_{seq_id} in the same DP cluster to nodes:"
                             " ".join([str(nid) for nid in dp_attn_cluster if nid != node_id])
                         )
@@ -964,8 +964,8 @@ class MoE:
         return dispatch_traffic, combine_traffic
 
 if __name__ == "__main__":
-    bsz = 1
-    seqlen = 1
+    bsz = 1024
+    seqlen = 128
 
     hidden_size = 7168
     moe_intermediate_size = 2048
