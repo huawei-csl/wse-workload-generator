@@ -31,6 +31,7 @@ if __name__=="__main__":
     argparser.add_argument("--bsz", type=int, default=1, help="batch size")
     argparser.add_argument("--prefill_len", type=int, default=32, help="prefill length")
     argparser.add_argument("--decode_len", type=int, default=10, help="decode length")
+    argparser.add_argument("--spec_dec", type=int, default=0, help="speculative decoding length, 0 means no speculative decoding")
     argparser.add_argument("--only_decode", type=int, choices=[0,1], default=1, help="1: skips prefill, 0: run both prefill and decode")
     argparser.add_argument("--simplified_decode", type=int, choices=[0,1], default=1, help="0: full decode run, 1: run only first and last decode iterations, rest can be interpolated")
     argparser.add_argument("--nodes", type=str, default="all", help="nodes to run, e.g., 'all', '0,1,2', '0-3' (for 4 nodes), '0-3,5' (for 5 nodes)")
@@ -83,4 +84,5 @@ if __name__=="__main__":
     with open(args.outdir+"/footprint.json", "w") as f:
         json.dump(footprint_list, f)
 
-    generator.decode(decode_models, args.bsz, args.prefill_len, args.decode_len, args.simplified_decode)
+    seqlen_q = 1 + args.spec_dec
+    generator.decode(decode_models, args.bsz, seqlen_q, args.prefill_len, args.decode_len, args.simplified_decode)

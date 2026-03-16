@@ -8,6 +8,8 @@ from src.node_level.layers.grouped_linear import GroupedLinear
 from src.node_level.layers.allreduce import Allreduce
 from src.node_level.layers.mla_absorb import MLAAbsorbAttention
 from src.node_level.common.stats import NodeStats
+from src.node_level.common.compute_graph import reset_compute_graph
+from src.node_level.common.config import SystemConfig
 
 class MLAAbsorbBlock:
     '''
@@ -73,7 +75,7 @@ class MLAAbsorbBlock:
         self._stats.new_iter(stats.iter)
 
         local_bsz, seqlen, _ = x.dims # input x is a minibatch based on a given dp factor
-        assert seqlen == 1, "Absorb block should be used only for decode"
+        # assert seqlen == 1, "Absorb block should be used only for decode"
 
         kv = self.ops["wkv_a"].forward(x, stats=self._stats)
         #TODO: implement KV update
@@ -169,3 +171,73 @@ class MLAAbsorbBlock:
             "network_data": network_data
         }
         return expected
+    
+if __name__=="__main__":
+    bsz = 32
+    ctx_len = 1024
+    dp_attn = 2
+    tp_attn = 2
+    sp = 2
+
+    reset_compute_graph()
+
+    stats = NodeStats()
+    stats.new_iter(iter_id=0)
+
+    seqlen = 4
+
+    hidden_size = 7168
+    q_lora_rank = 1536
+    kv_lora_rank = 512
+    n_heads = 128
+    qk_nope_head_dim = 128
+    qk_rope_head_dim = 64
+    v_head_dim = 512
+    next_layer = None
+    dtype = "fp16"
+
+    num_nodes = dp_attn * tp_attn * sp
+    decode_cfg = SystemConfig().from_args(
+        num_nodes=num_nodes, 
+        dp_attn=dp_attn, 
+        tp_attn=tp_attn, 
+        sp=sp, 
+        ep=num_nodes # not relevant for MLA
+    )
+
+    assert n_heads % tp_attn == 0, "n_heads must be divisible by tp_attn"
+
+    ops = {}
+    for rank in range(num_nodes):
+        dist_info = decode_cfg.get_dist_info(rank)
+
+        ops[rank] = MLAAbsorbBlock(
+            uid=f"{rank}:mlaabsorbblock_0", 
+            hidden_size=hidden_size,  
+            q_lora_rank=q_lora_rank,
+            kv_lora_rank=kv_lora_rank,
+            n_heads=n_heads,
+            qk_nope_head_dim=qk_nope_head_dim,
+            qk_rope_head_dim=qk_rope_head_dim,
+            v_head_dim=v_head_dim,
+            dist_info=dist_info,
+            next_layer=next_layer,
+            dtype=dtype
+        )
+
+        dist_info.batch_mapping(bsz)
+        batch_ids = dist_info.get_local_batchids("attn")
+        local_bsz = len(batch_ids)
+
+        x = Tensor("input", rank, [local_bsz, seqlen, hidden_size])
+        out_tensor = ops[rank].forward(x, ctx_len, stats=stats)
+
+        assert out_tensor.dims == [local_bsz, seqlen, hidden_size]
+
+        expected = ops[rank].calc_expected(local_bsz, seqlen, ctx_len)
+
+        op_mem_foot, op_num_ops, op_hbm_reads, op_net_data = ops[rank]._stats.sumUp()
+        assert expected["memory_footprint"] == op_mem_foot, f"Expected memory_footprint {expected['memory_footprint']}, got {op_mem_foot}"
+        assert expected["num_ops"] == op_num_ops, f"Expected num_ops {expected['num_ops']}, got {op_num_ops}"
+        assert expected["hbm_reads"] == op_hbm_reads, f"Expected hbm_reads {expected['hbm_reads']}, got {op_hbm_reads}"
+        assert expected["network_data"] == op_net_data, f"Expected network_data {expected['network_data']}, got {op_net_data}"

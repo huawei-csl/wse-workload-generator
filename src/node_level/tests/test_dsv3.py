@@ -12,7 +12,7 @@ from src.node_level.common.utils import dtype_to_byte, intceil
 from src.node_level.common.workload import get_moe_gate_model, reset_moe_gate_model
 from src.node_level.layers.moe import MoE
 
-def run(model_config, bsz, prefill_len, decode_len, tp_attn=1, tp_ffn=1, dp_attn=1, dp_ffn=1, pp=1, ep=1, sp=1, dtype="fp16"):
+def run(model_config, bsz, seqlen_q, prefill_len, decode_len, tp_attn=1, tp_ffn=1, dp_attn=1, dp_ffn=1, pp=1, ep=1, sp=1, dtype="fp16"):
     reset_moe_gate_model()
 
     num_nodes = tp_attn * dp_attn * pp * sp
@@ -25,7 +25,7 @@ def run(model_config, bsz, prefill_len, decode_len, tp_attn=1, tp_ffn=1, dp_attn
         model = build_model(model_config, decode_cfg.get_dist_info(rank), dtype, layer_ids="all", out_dir=None)
         models.append(model)
 
-    generator.decode(models, bsz, prefill_len, decode_len, simplified_decode=True)
+    generator.decode(models, bsz, seqlen_q, prefill_len, decode_len, simplified_decode=True)
 
     total_memory_footprint, total_num_ops, total_hbm_reads = 0, 0, 0
     num_activated_experts = 0
@@ -42,20 +42,21 @@ def run(model_config, bsz, prefill_len, decode_len, tp_attn=1, tp_ffn=1, dp_attn
     return total_memory_footprint, total_num_ops, total_hbm_reads, num_activated_experts
 
 @pytest.mark.parametrize(
-    "bsz,dp_attn,tp_attn,sp,prefill_len,decode_len,dtype", 
+    "bsz,seqlen_q,dp_attn,tp_attn,sp,prefill_len,decode_len,dtype", 
     [
-        (1, 1, 1, 1, 1024, 100, "fp16"), # single-batch, no parallelism
-        (4, 1, 1, 1, 1024, 100, "fp16"), # multi-batch, no parallelism
-        (8, 2, 1, 1, 1024, 100, "fp16"), # DP=2 in attention, EP=2 in FFN
-        (8, 1, 2, 1, 1024, 100, "fp16"), # TP=2 in attention, EP=2 in FFN
-        (8, 1, 1, 2, 1024, 100, "fp16"), # SP=2 in attention, EP=2 in FFN
-        (8, 2, 2, 2, 1024, 100, "fp16"), # DP=2, TP=2, SP=2 in attention, EP=8 in FFN
-        (8, 2, 2, 2, 1024, 100, "fp8"), # fp8
-        (8, 3, 2, 2, 1024, 100, "fp8"), # uneven batch and expert split
-        (128, 3, 2, 2, 1024, 100, "fp8"), # large batch size
+        (1, 1, 1, 1, 1, 1024, 100, "fp16"), # single-batch, no parallelism
+        (4, 1, 1, 1, 1, 1024, 100, "fp16"), # multi-batch, no parallelism
+        (8, 1, 2, 1, 1, 1024, 100, "fp16"), # DP=2 in attention, EP=2 in FFN
+        (8, 1, 1, 2, 1, 1024, 100, "fp16"), # TP=2 in attention, EP=2 in FFN
+        (8, 1, 1, 1, 2, 1024, 100, "fp16"), # SP=2 in attention, EP=2 in FFN
+        (8, 1, 2, 2, 2, 1024, 100, "fp16"), # DP=2, TP=2, SP=2 in attention, EP=8 in FFN
+        (8, 1, 2, 2, 2, 1024, 100, "fp8"), # fp8
+        (8, 1, 3, 2, 2, 1024, 100, "fp8"), # uneven batch and expert split
+        (128, 1, 3, 2, 2, 1024, 100, "fp8"), # large batch size
+        (8, 2, 3, 2, 2, 1024, 100, "fp8"), # seqlen_q > 1 case
     ]
 )
-def test_dsv3(bsz, dp_attn, tp_attn, sp, prefill_len, decode_len, dtype):
+def test_dsv3(bsz, seqlen_q, dp_attn, tp_attn, sp, prefill_len, decode_len, dtype):
     '''
     This test counts the total number of operations for various EP values and expects it to be the same as single-node execution.
     '''
@@ -73,12 +74,11 @@ def test_dsv3(bsz, dp_attn, tp_attn, sp, prefill_len, decode_len, dtype):
     ep = num_nodes
     pp = 1
 
-    _, total_num_ops, total_hbm_reads, num_activated_experts = run(model_config, bsz, prefill_len, decode_len, dp_attn=dp_attn, tp_attn=tp_attn, sp=sp, dp_ffn=dp_ffn, tp_ffn=tp_ffn, ep=ep, pp=pp, dtype=dtype)
+    _, total_num_ops, total_hbm_reads, num_activated_experts = run(model_config, bsz, seqlen_q, prefill_len, decode_len, dp_attn=dp_attn, tp_attn=tp_attn, sp=sp, dp_ffn=dp_ffn, tp_ffn=tp_ffn, ep=ep, pp=pp, dtype=dtype)
 
     ctx_len = prefill_len + (decode_len -1)
 
     # Attention expected number of operations
-    seqlen_q = 1
     flops_wqa = (bsz/dp_attn) * seqlen_q * 11010048
     flops_wkva = (bsz/dp_attn) * seqlen_q * 4128768
     flops_wqb = (bsz/dp_attn) * seqlen_q * (37748736 // tp_attn)
@@ -90,7 +90,6 @@ def test_dsv3(bsz, dp_attn, tp_attn, sp, prefill_len, decode_len, dtype):
     expected_flops_attn = num_nodes * expected_flops_attn
 
     # MoE expected number of operations
-    seqlen_q = 1
     n_routed_experts = 256
     moe_weight_size = 3 * 7168 * 2048
     expected_flops_moe = bsz * seqlen_q * 9 * moe_weight_size # calculations with routed experts
@@ -146,4 +145,4 @@ def test_dsv3(bsz, dp_attn, tp_attn, sp, prefill_len, decode_len, dtype):
     assert expected_hbm_reads == total_hbm_reads, f"HBM reads mismatch: {expected_hbm_reads} vs {total_hbm_reads}"
 
 if __name__ == "__main__":
-    test_dsv3(128, 3, 2, 2, 1024, 100, "fp16")
+    test_dsv3(128, 1, 3, 2, 2, 1024, 100, "fp16")

@@ -15,6 +15,7 @@ def run(model_config, tp_attn=1, tp_ffn=1, dp_attn=1, dp_ffn=1, pp=1, ep=1):
     bsz = 32
     prefill_len = 1024
     decode_len = 1024
+    seqlen_q = 1
     dtype = "fp16"
 
     num_nodes = tp_attn * dp_attn * pp * sp
@@ -27,7 +28,7 @@ def run(model_config, tp_attn=1, tp_ffn=1, dp_attn=1, dp_ffn=1, pp=1, ep=1):
     for rank in range(decode_cfg.num_nodes):
         models.append(build_model(model_config, decode_cfg.get_dist_info(rank), dtype, layer_ids="all", out_dir=None))
 
-    generator.decode(models, bsz, prefill_len, decode_len, simplified_decode=True)
+    generator.decode(models, bsz, seqlen_q, prefill_len, decode_len, simplified_decode=True)
 
     total_memory_footprint, total_num_ops, total_hbm_reads = 0, 0, 0
     for i in range(len(models)):

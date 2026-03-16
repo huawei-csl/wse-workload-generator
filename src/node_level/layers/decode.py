@@ -84,11 +84,6 @@ class DSv3DecodeLayer:
         self.attention.set_next_layer(self.ffn)
 
     def forward(self, x, ctx_len, stats):
-        bsz, seqlen, _ = x.dims
-
-        is_prefill = ctx_len == 0
-        if not is_prefill:
-            assert seqlen == 1
 
         x = self.attention.forward(x, ctx_len, stats=stats)
 

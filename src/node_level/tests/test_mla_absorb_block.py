@@ -9,24 +9,24 @@ from src.node_level.common.config import SystemConfig
 
 
 @pytest.mark.parametrize(
-    "bsz,ctx_len,dp_attn,tp_attn,sp",
+    "bsz,seqlen,ctx_len,dp_attn,tp_attn,sp",
     [
-        (4, 32, 1, 1, 1), # single node
-        (4, 32, 2, 1, 1), # data parallel case
-        (4, 32, 1, 2, 1), # tensor parallel case
-        (4, 32, 1, 1, 2), # seq parallel case
-        (64, 512, 4, 4, 4), # combined case
-        (63, 512, 4, 4, 4), # uneven batch size case
-        (63, 511, 4, 4, 4), # uneven batch size and context length case
+        (4, 1, 32, 1, 1, 1), # single node
+        (4, 1, 32, 2, 1, 1), # data parallel case
+        (4, 1, 32, 1, 2, 1), # tensor parallel case
+        (4, 1, 32, 1, 1, 2), # seq parallel case
+        (64, 1, 512, 4, 4, 4), # combined case
+        (63, 1, 512, 4, 4, 4), # uneven batch size case
+        (63, 1, 511, 4, 4, 4), # uneven batch size and context length case
+        (63, 2, 511, 4, 4, 4), # seqlen > 1 case
     ]
 )
-def test_mla_absorb_block(bsz, ctx_len, dp_attn, tp_attn, sp):
+def test_mla_absorb_block(bsz, seqlen, ctx_len, dp_attn, tp_attn, sp):
     reset_compute_graph()
 
     stats = NodeStats()
     stats.new_iter(iter_id=0)
 
-    seqlen = 1
     hidden_size = 7168
     q_lora_rank = 1536
     kv_lora_rank = 512
@@ -84,4 +84,4 @@ def test_mla_absorb_block(bsz, ctx_len, dp_attn, tp_attn, sp):
         assert expected["network_data"] == op_net_data, f"Expected network_data {expected['network_data']}, got {op_net_data}"
 
 if __name__=="__main__":
-    test_mla_absorb_block(64, 512, 4, 4, 4)
+    test_mla_absorb_block(64, 1, 512, 4, 4, 4)

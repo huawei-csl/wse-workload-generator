@@ -39,8 +39,6 @@ class Model:
         self.new_iter(iter_id, bsz, seqlen)
 
         is_prefill = ctx_len==0
-        if not is_prefill:
-            assert seqlen==1, "seqlen must be 1 for decoding"
 
         logging.info("{} with bsz: {}, seqlen: {}, ctx_len: {}".format("Prefill" if is_prefill else "Decode", bsz, seqlen, ctx_len))
 
