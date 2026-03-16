@@ -1,3 +1,6 @@
+import time 
+import logging 
+
 from src.node_level.common.tensor import Tensor
 from src.node_level.common.compute_graph import reset_compute_graph
 
@@ -22,9 +25,13 @@ class Generator:
 
         for i in iter_ids:
             for model in models:
+                start = time.time()
+
                 reset_compute_graph()
                 ctx_len = prefill_len + i
                 seqlen_q = 1
 
                 queries = Tensor("queries", model.dist_info.rank, [bsz, seqlen_q, model.hidden_size])
                 model.forward(queries, ctx_len=ctx_len, iter_id=i+1)
+
+                logging.info(f"Node {model.dist_info.rank} / {len(models)} iteration {i+1} completed in {time.time() - start:.4f} seconds")

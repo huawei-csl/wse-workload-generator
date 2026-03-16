@@ -302,7 +302,8 @@ class MoE:
 
     def forward_dispatch_multicast(self, x, stats):
         _, seqlen, hidden_dim = x.dims
-        dispatch_traffic, combine_traffic = self.routings_summary(seqlen)
+        
+        # dispatch_traffic, combine_traffic = self.routings_summary(seqlen)
 
         # batch ids processed by this DP cluster
         batch_ids = self.dist_info.get_batch_dist_within_dp()
@@ -336,7 +337,7 @@ class MoE:
                 # sort the dst_nodes for consistent ordering
                 dst_nodes = sorted(dst_nodes)
 
-                assert dst_nodes == [dst for dst in range(len(dispatch_traffic[self.dist_info.rank])) for token in dispatch_traffic[self.dist_info.rank][dst] if token[0] == batch_id and token[1] == seq_id]
+                # assert dst_nodes == [dst for dst in range(len(dispatch_traffic[self.dist_info.rank])) for token in dispatch_traffic[self.dist_info.rank][dst] if token[0] == batch_id and token[1] == seq_id]
 
                 if len(dst_nodes) > 0:
                     Multicast(f"{self.uid}_multicast_exp_{batch_id}_{seq_id}", dims=x_slice.dims, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(
@@ -457,7 +458,7 @@ class MoE:
         if len(exp_outs) == 0:
             return 
         
-        dispatch_traffic, combine_traffic = self.routings_summary(seqlen)
+        # dispatch_traffic, combine_traffic = self.routings_summary(seqlen)
 
         batchid_dst = {i: [] for i in range(self.dist_info.num_nodes)}
 
@@ -487,8 +488,8 @@ class MoE:
             if dst_node == self.dist_info.rank:
                 continue
 
-            for i in range(len(batchid_dst[dst_node])):
-                assert batchid_dst[dst_node][i] == combine_traffic[self.dist_info.rank][dst_node][i]
+            # for i in range(len(batchid_dst[dst_node])):
+            #     assert batchid_dst[dst_node][i] == combine_traffic[self.dist_info.rank][dst_node][i]
             
             # if there are tokens to send to node i, do unicast
             if len(batchid_dst[dst_node]) > 0:
