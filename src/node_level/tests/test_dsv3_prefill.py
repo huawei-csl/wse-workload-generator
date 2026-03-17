@@ -131,7 +131,7 @@ def test_dsv3_prefill(bsz, dp_attn, tp_attn, sp, prefill_len, dtype):
     print("Total HBM reads actual:   ", total_hbm_reads)
 
     assert expected_flops == total_num_ops, f"Expected {expected_flops} operations, but got {total_num_ops}"
-    assert expected_hbm_reads == total_hbm_reads, f"HBM reads mismatch: {expected_hbm_reads} vs {total_hbm_reads}"
+    assert expected_hbm_reads == total_hbm_reads, f"Expected {expected_hbm_reads} HBM reads, but got {total_hbm_reads}"
 
 if __name__=="__main__":
-    test_dsv3_prefill(4, 1, 1, 1, 32, "fp16")
+    test_dsv3_prefill(4, 1, 1, 2, 8, "fp16")

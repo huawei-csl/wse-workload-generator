@@ -733,13 +733,10 @@ class MoE:
             if len(recv_batch_ids) > 0:
                 x_slices = []
                 for batch_id, seq_id in recv_batch_ids:
+                    x_slice = Slice(x, [batch_id], axis=0, uid=x.uid + f"_expert{e}_slice{batch_id}.{seq_id}").forward(stats=stats)
+                    x_slice = Slice(x_slice, [seq_id], axis=1, uid=x_slice.uid + f"_seq{seq_id}").forward(stats=stats)
                     x_slices.append(
-                        Slice(
-                            x, 
-                            [batch_id], 
-                            axis=0, 
-                            uid=x.uid + f"_slice{batch_id}_expert{e}"
-                        ).forward(stats=stats)
+                        x_slice
                     )
                 x_exp = Concat(
                     x_slices,
