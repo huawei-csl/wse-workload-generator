@@ -12,7 +12,7 @@ from src.node_level.common.utils import dtype_to_byte, intceil
 from src.node_level.common.workload import get_moe_gate_model, reset_moe_gate_model
 from src.node_level.layers.moe import MoE
 
-def run(model_config, bsz, seqlen_q, prefill_len, decode_len, tp_attn=1, tp_ffn=1, dp_attn=1, dp_ffn=1, pp=1, ep=1, sp=1, dtype="fp16"):
+def run_decode(model_config, bsz, seqlen_q, prefill_len, decode_len, tp_attn=1, tp_ffn=1, dp_attn=1, dp_ffn=1, pp=1, ep=1, sp=1, dtype="fp16"):
     reset_moe_gate_model()
 
     num_nodes = tp_attn * dp_attn * pp * sp
@@ -30,10 +30,10 @@ def run(model_config, bsz, seqlen_q, prefill_len, decode_len, tp_attn=1, tp_ffn=
     total_memory_footprint, total_num_ops, total_hbm_reads = 0, 0, 0
     num_activated_experts = 0
     for i in range(len(models)):
-        out = models[i].stats.summarize()
-        total_memory_footprint += out[0]
-        total_num_ops += out[1]
-        total_hbm_reads += out[2]
+        mem_footprint, num_ops, hbm_reads, _ = models[i].stats.summarize()
+        total_memory_footprint += mem_footprint
+        total_num_ops += num_ops
+        total_hbm_reads += hbm_reads
 
     layer_ids = [layer.ffn.uid for layer in models[0].layers if isinstance(layer.ffn, MoE)]
     for layer_id in layer_ids:
@@ -53,10 +53,10 @@ def run(model_config, bsz, seqlen_q, prefill_len, decode_len, tp_attn=1, tp_ffn=
         (8, 1, 2, 2, 2, 1024, 100, "fp8"), # fp8
         (8, 1, 3, 2, 2, 1024, 100, "fp8"), # uneven batch and expert split
         (128, 1, 3, 2, 2, 1024, 100, "fp8"), # large batch size
-        (8, 2, 3, 2, 2, 1024, 100, "fp8"), # seqlen_q > 1 case
+        (8, 2, 3, 2, 2, 1024, 100, "fp8"), # seqlen_q > 1 case, speculative decoding
     ]
 )
-def test_dsv3(bsz, seqlen_q, dp_attn, tp_attn, sp, prefill_len, decode_len, dtype):
+def test_dsv3_decode(bsz, seqlen_q, dp_attn, tp_attn, sp, prefill_len, decode_len, dtype):
     '''
     This test counts the total number of operations for various EP values and expects it to be the same as single-node execution.
     '''
@@ -74,7 +74,7 @@ def test_dsv3(bsz, seqlen_q, dp_attn, tp_attn, sp, prefill_len, decode_len, dtyp
     ep = num_nodes
     pp = 1
 
-    _, total_num_ops, total_hbm_reads, num_activated_experts = run(model_config, bsz, seqlen_q, prefill_len, decode_len, dp_attn=dp_attn, tp_attn=tp_attn, sp=sp, dp_ffn=dp_ffn, tp_ffn=tp_ffn, ep=ep, pp=pp, dtype=dtype)
+    _, total_num_ops, total_hbm_reads, num_activated_experts = run_decode(model_config, bsz, seqlen_q, prefill_len, decode_len, dp_attn=dp_attn, tp_attn=tp_attn, sp=sp, dp_ffn=dp_ffn, tp_ffn=tp_ffn, ep=ep, pp=pp, dtype=dtype)
 
     ctx_len = prefill_len + (decode_len -1)
 
@@ -145,4 +145,4 @@ def test_dsv3(bsz, seqlen_q, dp_attn, tp_attn, sp, prefill_len, decode_len, dtyp
     assert expected_hbm_reads == total_hbm_reads, f"HBM reads mismatch: {expected_hbm_reads} vs {total_hbm_reads}"
 
 if __name__ == "__main__":
-    test_dsv3(128, 1, 3, 2, 2, 1024, 100, "fp16")
+    test_dsv3_decode(128, 1, 3, 2, 2, 1024, 100, "fp16")

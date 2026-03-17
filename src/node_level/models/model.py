@@ -47,13 +47,6 @@ class Model:
         batch_ids = self.dist_info.get_local_batchids("attn")
         x = Slice(x, batch_ids, axis=0).forward(self.stats)
 
-        if is_prefill and self.dist_info.sp > 1:
-            local_seqlens = divide_equal(seqlen, self.dist_info.sp)
-            start = sum(local_seqlens[:self.dist_info.rank_sp])
-            end = start + local_seqlens[self.dist_info.rank_sp]
-            assert end > start
-            x = Slice(x, list(range(start, end)), axis=1).forward(self.stats)
-
         for l in range(len(self.layers)):
             x = self.layers[l].forward(x, ctx_len, self.stats)
         if self.head:
