@@ -122,14 +122,6 @@ class MLAAbsorbBlock:
         stats.merge(self._stats)
         return y
 
-    def split_input_batch(self, x):
-        batch_ids = self.dist_info.get_local_batchids("attn")
-        x = Slice(x, batch_ids, axis=0).forward(self.stats)
-        return x
-    
-    def concat_output_batch(self, y, bsz):
-        pass
-
     def memory_footprint(self, bsz, ctx_len):
         batch_ids = self.dist_info.get_local_batchids("attn")
         local_bsz = len(batch_ids)

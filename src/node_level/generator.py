@@ -9,12 +9,15 @@ class Generator:
         pass
 
     def prefill(self, models, bsz, prefill_len):
-        reset_compute_graph()
-
         ## PREFILL
         for model in models:
+            start = time.time()
+
+            reset_compute_graph()
             queries = Tensor("queries", model.dist_info.rank, [bsz, prefill_len, model.hidden_size])
             model.forward(queries, ctx_len=0, iter_id=0)
+
+            logging.info(f"Node {model.dist_info.rank} / {len(models)} prefill completed in {time.time() - start:.4f} seconds")
 
     def decode(self, models, bsz, seqlen_q, prefill_len, decode_len, simplified_decode):
         ## DECODE
@@ -34,4 +37,4 @@ class Generator:
                 queries = Tensor("queries", model.dist_info.rank, [bsz, seqlen_q, model.hidden_size])
                 model.forward(queries, ctx_len=ctx_len, iter_id=i+1)
 
-                logging.info(f"Node {model.dist_info.rank} / {len(models)} iteration {i+1} completed in {time.time() - start:.4f} seconds")
+                logging.info(f"Node {model.dist_info.rank} / {len(models)} decode iteration {i+1} completed in {time.time() - start:.4f} seconds")
