@@ -70,7 +70,7 @@ class SystemConfig:
                   moe_comm: str = "multicast"):
         
         assert expert_workload_model in ["identical", "uniform", "empirical_mmlu"], "expert_workload_model must be one of ['identical', 'uniform', 'empirical_mmlu']"
-        assert moe_comm in ["allgather", "multicast"], "moe_comm must be one of ['allgather', 'multicast']"
+        assert moe_comm in ["allgather", "alltoall", "multicast"], "moe_comm must be one of ['allgather', 'multicast']"
 
         self.num_nodes = num_nodes
         self.dp_attn = dp_attn

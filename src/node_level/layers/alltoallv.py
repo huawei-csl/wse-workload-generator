@@ -28,10 +28,10 @@ class AllToAllv:
         assert sum([x.dims[0] for x in inputs]) == sum(self.input_split), "Sum of input tensor splits must match sum of input_split"
 
         input_dims = list(inputs[0].dims)
-        input_dims[self.axis] = sum(self.input_split)
+        input_dims[self.axis] = sum([s for i, s in enumerate(self.input_split) if self.rank != i])
 
         output_dims = list(inputs[0].dims)
-        output_dims[self.axis] = sum(self.output_split)
+        output_dims[self.axis] = sum([s for i, s in enumerate(self.output_split) if self.rank != i])
 
         memory_footprint = self.memory_footprint()
         num_ops = self.num_ops()
@@ -61,7 +61,7 @@ class AllToAllv:
     
     def network_data(self, input_dims, output_dims):
         input_size = eval("*".join([str(d) for d in input_dims])) * dtype_to_byte(self.dtype)
-        output_size = eval("*".join([str(d) for d in output_dims])) * dtype_to_byte(self.dtype)
-        network_size = input_size + output_size # 1 vec receive + 1 vec send
+        # output_size = eval("*".join([str(d) for d in output_dims])) * dtype_to_byte(self.dtype)
+        network_size = input_size # total data size that is sent from this node
         logging.debug("{}: network data size (send + receive): {} B".format(self.uid, network_size))
         return network_size # in bytes

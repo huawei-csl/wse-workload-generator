@@ -5,6 +5,7 @@ import logging
 import json 
 
 np.random.seed(42)
+torch.random.manual_seed(42)
 
 class MoEGateModel:
     def __init__(self, num_experts_per_tok, n_routed_experts, layer_ids, workload_model) -> None:
@@ -75,7 +76,6 @@ class MoEGateModel:
         return "_".join(layer_id.split("_")[1:])
 
     def get_expert_routings(self, layer_id):
-        # return self.expert_routings[self.iter_id][self.strip_layerid(layer_id)]
         return self.expert_routings[self.iter_id][layer_id]
 
     def get_activated_experts(self, layer_id):

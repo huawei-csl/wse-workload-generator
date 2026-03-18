@@ -13,22 +13,24 @@ from src.node_level.common.workload import get_moe_gate_model, reset_moe_gate_mo
 
 
 @pytest.mark.parametrize(
-    "bsz,seqlen,ep,dp_attn,n_redundant_shared_exp,dtype", 
+    "bsz,seqlen,ep,dp_attn,n_redundant_shared_exp,moe_comm,dtype", 
     [
-        (1, 1, 1, 1, 1, "fp16"), # single-node test case
-        (1, 1, 8, 1, 1, "fp16"), # single-batch test case
-        (4, 1, 8, 1, 1, "fp16"), # multi-batch test case
-        (128, 1, 8, 1, 1, "fp16"), # large-batch test case
-        (128, 1, 8, 2, 1, "fp16"), # dp_attn > 1
-        (128, 1, 8, 8, 1, "fp16"), # dp_attn == ep
-        (128, 1, 8, 2, 2, "fp16"), # with redundant shared experts
-        (128, 1, 8, 2, 8, "fp16"), # each node has a redundant shared expert
-        (128, 1, 56, 14, 4, "fp16"), # unbalanced num local experts
-        (128, 1, 56, 14, 4, "fp8"), # fp8
-        (128, 4, 56, 14, 4, "fp8"), # seqlen > 1
+        (1, 1, 1, 1, 1, "multicast", "fp16"), # single-node test case
+        (1, 1, 8, 1, 1, "multicast", "fp16"), # single-batch test case
+        (4, 1, 8, 1, 1, "multicast", "fp16"), # multi-batch test case
+        (4, 1, 8, 1, 1, "alltoall", "fp16"), # multi-batch test case, alltoall
+        (128, 1, 8, 1, 1, "multicast", "fp16"), # large-batch test case
+        (128, 1, 8, 2, 1, "multicast", "fp16"), # dp_attn > 1
+        (128, 1, 8, 8, 1, "multicast", "fp16"), # dp_attn == ep
+        (128, 1, 8, 2, 2, "multicast", "fp16"), # with redundant shared experts
+        (128, 1, 8, 2, 2, "alltoall", "fp16"), # with redundant shared experts, alltoall
+        (128, 1, 8, 2, 8, "multicast", "fp16"), # each node has a redundant shared expert
+        (128, 1, 56, 14, 4, "multicast", "fp16"), # unbalanced num local experts
+        (128, 1, 56, 14, 4, "multicast", "fp8"), # fp8
+        (128, 4, 56, 14, 4, "multicast", "fp8"), # seqlen > 1
     ], 
 )
-def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, dtype):
+def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, moe_comm, dtype):
     reset_moe_gate_model()
     reset_compute_graph()
 
@@ -51,7 +53,7 @@ def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, dtype):
                 dp_attn=dp_attn,
                 tp_attn=tp_attn,
                 ep=ep,
-                moe_comm="multicast",
+                moe_comm=moe_comm,
                 expert_workload_model="uniform",
                 n_redundant_shared_exp=n_redundant_shared_exp,
         ).get_dist_info(rank)
@@ -82,7 +84,6 @@ def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, dtype):
         assert y.dims == [local_bsz, seqlen, hidden_size], f"Output dims {y.dims} do not match expected dims {[local_bsz, seqlen, hidden_size]}"
 
         op_mem_foot, op_num_ops, op_hbm_reads, op_net_data = stats.sumUp()
-        print(op_mem_foot, op_num_ops, op_hbm_reads, op_net_data)
 
         expert_routing = moe_gate_model.get_expert_routings(layer_id="moe_0")
 
@@ -133,10 +134,11 @@ def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, dtype):
 
 if __name__=="__main__":
     test_moe(
-        bsz=128,
-        seqlen=2,
-        ep=56,
-        dp_attn=14,
-        n_redundant_shared_exp=4,
-        dtype="fp8"
+        bsz=4,
+        seqlen=1,
+        ep=8,
+        dp_attn=1,
+        n_redundant_shared_exp=1,
+        moe_comm="alltoall",
+        dtype="fp16"
     )
