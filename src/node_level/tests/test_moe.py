@@ -19,11 +19,13 @@ from src.node_level.common.workload import get_moe_gate_model, reset_moe_gate_mo
         (1, 1, 8, 1, 1, "multicast", "fp16"), # single-batch test case
         (4, 1, 8, 1, 1, "multicast", "fp16"), # multi-batch test case
         (4, 1, 8, 1, 1, "alltoall", "fp16"), # multi-batch test case, alltoall
+        (4, 1, 8, 1, 1, "allgather", "fp16"), # multi-batch test case, allgather
         (128, 1, 8, 1, 1, "multicast", "fp16"), # large-batch test case
         (128, 1, 8, 2, 1, "multicast", "fp16"), # dp_attn > 1
         (128, 1, 8, 8, 1, "multicast", "fp16"), # dp_attn == ep
         (128, 1, 8, 2, 2, "multicast", "fp16"), # with redundant shared experts
         (128, 1, 8, 2, 2, "alltoall", "fp16"), # with redundant shared experts, alltoall
+        (128, 1, 8, 2, 2, "allgather", "fp16"), # with redundant shared experts, allgather
         (128, 1, 8, 2, 8, "multicast", "fp16"), # each node has a redundant shared expert
         (128, 1, 56, 14, 4, "multicast", "fp16"), # unbalanced num local experts
         (128, 1, 56, 14, 4, "multicast", "fp8"), # fp8
@@ -115,16 +117,31 @@ def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, moe_comm, dtype):
 
         dispatch_traffic, combine_traffic = moe_layer.routings_summary(seqlen)
 
-        expected_network_data = 0
-        src_id = rank
-        for dst_id in range(len(dispatch_traffic)):
-            expected_network_data += len(dispatch_traffic[src_id][dst_id]) * hidden_size * dtype_to_byte(dtype)
+        if moe_comm in ["multicast", "alltoall"]:
+            expected_network_data = 0
+            src_id = rank
+            for dst_id in range(len(dispatch_traffic)):
+                if dst_id != src_id:
+                    expected_network_data += len(dispatch_traffic[src_id][dst_id]) * hidden_size * dtype_to_byte(dtype)
 
-        for dst_id in range(len(combine_traffic)):
-            expected_network_data += len(combine_traffic[src_id][dst_id]) * hidden_size * dtype_to_byte(dtype)
+            for dst_id in range(len(combine_traffic)):
+                if dst_id != src_id:
+                    expected_network_data += len(combine_traffic[src_id][dst_id]) * hidden_size * dtype_to_byte(dtype)
 
-        dp_attn_cluster_size = len(dist_info.dp_attn_cluster)
-        expected_network_data += len(dist_info.get_batch_dist_within_dp()) * seqlen * hidden_size * dtype_to_byte(dtype) * (dp_attn_cluster_size-1)
+            dp_attn_cluster_size = len(dist_info.dp_attn_cluster)
+            expected_network_data += len(dist_info.get_batch_dist_within_dp()) * seqlen * hidden_size * dtype_to_byte(dtype) * (dp_attn_cluster_size-1)
+        else:
+            src_id = rank
+
+            expected_network_data = 0
+            for dst_id in range(len(dispatch_traffic)):
+                if dst_id != src_id:
+                    expected_network_data += 2 * local_bsz * seqlen * hidden_size * dtype_to_byte(dtype) # dispatch 
+            
+            num_tokens = sum([len(combine_traffic[src_id][dst_id]) for dst_id in range(len(combine_traffic))])
+            for dst_id in range(len(combine_traffic)):
+                if dst_id != src_id:
+                    expected_network_data += 2 * num_tokens * hidden_size * dtype_to_byte(dtype) # combine
 
         assert expected_footprint == moe_layer.memory_footprint(), f"Expected memory_footprint {expected_footprint}, got {moe_layer.memory_footprint()}"
         assert expected_num_ops == op_num_ops, f"Expected num_ops {expected_num_ops}, got {op_num_ops}"
@@ -137,8 +154,8 @@ if __name__=="__main__":
         bsz=4,
         seqlen=1,
         ep=8,
-        dp_attn=1,
+        dp_attn=2,
         n_redundant_shared_exp=1,
-        moe_comm="alltoall",
+        moe_comm="allgather",
         dtype="fp16"
     )
