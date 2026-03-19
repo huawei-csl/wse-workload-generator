@@ -11,6 +11,7 @@ from src.node_level.common.utils import dtype_to_byte, intceil
 
 from src.node_level.common.workload import get_moe_gate_model, reset_moe_gate_model
 from src.node_level.layers.moe import MoE
+from src.core_level.common.graph import Graph
 
 def run_decode(model_config, bsz, seqlen_q, prefill_len, decode_len, tp_attn=1, tp_ffn=1, dp_attn=1, dp_ffn=1, pp=1, ep=1, sp=1, dtype="fp16"):
     reset_moe_gate_model()
@@ -22,10 +23,13 @@ def run_decode(model_config, bsz, seqlen_q, prefill_len, decode_len, tp_attn=1, 
 
     models = []
     for rank in range(decode_cfg.num_nodes):
-        model = build_model(model_config, decode_cfg.get_dist_info(rank), dtype, layer_ids="all", out_dir=None)
+        model = build_model(model_config, decode_cfg.get_dist_info(rank), dtype, layer_ids="all", out_dir="/tmp/wse_workload_test")
         models.append(model)
 
     generator.decode(models, bsz, seqlen_q, prefill_len, decode_len, simplified_decode=True)
+
+    # Check if we are able to build the graph correctly
+    Graph(iter=f"decode0", num_nodes=num_nodes, dir=f"/tmp/wse_workload_test/graph")
 
     total_memory_footprint, total_num_ops, total_hbm_reads = 0, 0, 0
     num_activated_experts = 0
@@ -145,4 +149,4 @@ def test_dsv3_decode(bsz, seqlen_q, dp_attn, tp_attn, sp, prefill_len, decode_le
     assert expected_hbm_reads == total_hbm_reads, f"HBM reads mismatch: {expected_hbm_reads} vs {total_hbm_reads}"
 
 if __name__ == "__main__":
-    test_dsv3_decode(128, 1, 3, 2, 2, 1024, 100, "fp16")
+    test_dsv3_decode(8, 2, 2, 2, 2, 1024, 100, "fp8")

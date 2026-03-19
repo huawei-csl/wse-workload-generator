@@ -132,9 +132,11 @@ class MoE:
         
         self.allgather_dispatch.forward(x, stats=stats)
 
-        x_recv = {}
+        local_experts = list(self.experts.keys())
+        local_experts += ["shared"] if self.shared_expert else []
 
-        for e in self.experts:
+        x_recv = {}
+        for e in local_experts:
             recv_batch_ids = self.get_batchids_by_expert(seqlen, e)
             batch_mappings = self.dist_info.batch_map_dp_rank["attn"]
 
@@ -170,32 +172,6 @@ class MoE:
                     axis=0,
                     uid=concat_uid).forward(stats=stats)
 
-        if self.shared_expert:
-            batch_ids_for_shared = self.get_batchids_by_expert(seqlen, "shared")
-            shared_recv_buff = []
-            for batch_id, seq_id in batch_ids_for_shared:
-                dp_attn_rank = batch_mappings[batch_id]
-                # dp_attn_cluster = [k for k,v in self.dist_info.global_cfg.ranks["dp_attn"].items() if v == dp_attn_rank]
-                # src_id = dp_attn_cluster[0]
-                src_id = self.dist_info.get_batchid_to_dispatch_src(batch_id)
-
-                batchid_offset = [v == dp_attn_rank for v in batch_mappings.values()].index(True)
-
-                local_buffer = Tensor(f"{x.uid}_ag_{src_id}", self.dist_info.rank, x.dims)
-                x_slice = Slice(
-                    local_buffer,
-                    [batch_id-batchid_offset],
-                    axis=0,
-                    uid=local_buffer.uid + f"_shared_slice{batch_id}"
-                ).forward(stats=stats)
-                shared_recv_buff.append(x_slice)
-
-            concat_uid = self.uid + "_shared_concat_" + hash_string("_".join([f"{batch_id}.{seq_id}" for batch_id, seq_id in batch_ids_for_shared]))
-            x_recv["shared"] = Concat(
-                shared_recv_buff,
-                axis=0,
-                uid=concat_uid).forward(stats=stats)
-                
         return x_recv
 
     def forward_dispatch_alltoall(self, x, stats):
@@ -203,12 +179,12 @@ class MoE:
 
         send_matrix = self.dist_info.get_dispatch_comm_matrix(self.uid, get_moe_gate_model(), self.n_experts, seqlen)
 
-        # # batch ids processed by this DP cluster
+        # batch ids processed by this DP cluster
         dp_local_batch_ids = self.dist_info.get_local_batchids("attn")
 
         x_send_buff = {}
+        x_send_buff_concats = []
         for dst_node_id in send_matrix[self.rank]:
-            
             x_send_buff[dst_node_id] = []
             for batch_id, seq_id in send_matrix[self.rank][dst_node_id]:
                 assert batch_id in dp_local_batch_ids, "Batch id {} is not in local batch ids {}".format(batch_id, dp_local_batch_ids)
@@ -218,11 +194,6 @@ class MoE:
                 x_slice = Slice(x_slice, [seq_id], axis=1, uid=x_slice.uid + f"_seq{seq_id}").forward(stats=stats)
                 x_send_buff[dst_node_id].append(x_slice)
 
-        send_split = [len(x_send_buff[dst_node_id]) for dst_node_id in x_send_buff]
-        recv_split = [len(send_matrix[src_node_id][self.rank]) for src_node_id in range(self.dist_info.num_nodes)]
-
-        x_send_buff_concats = []
-        for dst_node_id in x_send_buff:
             if len(x_send_buff[dst_node_id]) > 0:
                 x_send_buff_concat = Concat(
                     x_send_buff[dst_node_id],
@@ -238,7 +209,10 @@ class MoE:
                         [0, seqlen, hidden_dim]
                     )
                 )
-        
+
+        send_split = [len(x_send_buff[dst_node_id]) for dst_node_id in x_send_buff]
+        recv_split = [len(send_matrix[src_node_id][self.rank]) for src_node_id in range(self.dist_info.num_nodes)]
+
         alltoall_dispatch = AllToAllv(
             self.uid + "_a2a_disp", 
             rank = self.dist_info.rank, 
@@ -258,7 +232,9 @@ class MoE:
             )
 
         x_recv = {}
-        for e in self.experts:
+        local_experts = list(self.experts.keys())
+        local_experts += ["shared"] if self.shared_expert else []
+        for e in local_experts:
             x_recv[e] = []
             recv_batch_ids = self.get_batchids_by_expert(seqlen, e)
             if len(recv_batch_ids) > 0:
@@ -279,67 +255,24 @@ class MoE:
                     uid=f"{self.uid}_dispatch_recv_concat_expert{e}_" + hash_string("_".join([f"{batch_id}.{seq_id}" for batch_id, seq_id in recv_batch_ids]))
                 ).forward(stats=stats)
 
-        if self.shared_expert:
-            x_recv["shared"] = []
-            recv_batch_ids = self.get_batchids_by_expert(seqlen, "shared")
-            if len(recv_batch_ids) > 0:
-                for batch_id, seq_id in recv_batch_ids:
-                    src_id = self.dist_info.get_batchid_to_dispatch_src(batch_id)
-
-                    ind = send_matrix[src_id][self.rank].index((batch_id, seq_id))
-                    x_recv_slice = Slice(
-                        x_recv_buff[src_id],
-                        [ind],
-                        axis=0,
-                        uid=x_recv_buff[src_id].uid + f"_shared_slice{batch_id}.{seq_id}"
-                    ).forward(stats=stats)
-                    x_recv["shared"].append(x_recv_slice)
-            x_recv["shared"] = Concat(
-                x_recv["shared"],
-                axis=0,
-                uid=self.uid + "_shared_concat_" + hash_string("_".join([f"{batch_id}.{seq_id}" for batch_id, seq_id in recv_batch_ids]))
-            ).forward(stats=stats)
-
         return x_recv
 
     def forward_dispatch_multicast(self, x, stats):
         _, seqlen, hidden_dim = x.dims
         
-        # dispatch_traffic, combine_traffic = self.routings_summary(seqlen)
-
         # batch ids processed by this DP cluster
         batch_ids = self.dist_info.get_batch_dist_within_dp()
-        
-        # x has a batch size equal to the number of batch ids processed by this DP cluster. Substract an offset to get the correct slice indices
+
+        send_matrix = self.dist_info.get_dispatch_comm_matrix(self.uid, get_moe_gate_model(), self.n_experts, seqlen)
+
         for batch_id in batch_ids:
             minibatch_offset = batch_ids[0]
             x_slice_batch = Slice(x, [batch_id-minibatch_offset], axis=0, uid=x.uid + f"_slice{batch_id}").forward(stats=stats)
 
             for seq_id in range(seqlen):
-                x_slice = Slice(x_slice_batch, [seq_id], axis=1, uid=x_slice_batch.uid + f"_seq{seq_id}").forward(stats=stats)
+                x_slice = Slice(x_slice_batch, [seq_id], axis=1, uid=x_slice_batch.uid + f".{seq_id}").forward(stats=stats)
 
-                # get expert ids for this query
-                mapping = get_moe_gate_model().get_mapping_by_batchids(self.uid, batch_id)
-                logging.debug("batch_id: {}, mapping: {}".format(batch_id, mapping))
-
-                mapping = mapping[:, seq_id]
-
-                # calculate with nodes the experts are located
-                dst_nodes = [self.expertid_to_node[expert_id] for expert_id in mapping.tolist()]
-
-                # Add shared expert node to the destination
-                dst_nodes.append(self.dist_info.batch_to_shared_exp[batch_id])
-
-                # remove repeating nodes from dst_nodes
-                dst_nodes = list(dict.fromkeys(dst_nodes))
-
-                # remove itself from dst_nodes
-                dst_nodes = [node for node in dst_nodes if node != self.dist_info.rank]
-
-                # sort the dst_nodes for consistent ordering
-                dst_nodes = sorted(dst_nodes)
-
-                # assert dst_nodes == [dst for dst in range(len(dispatch_traffic[self.dist_info.rank])) for token in dispatch_traffic[self.dist_info.rank][dst] if token[0] == batch_id and token[1] == seq_id]
+                dst_nodes = [dst_node_id for dst_node_id in send_matrix[self.rank] if (batch_id, seq_id) in send_matrix[self.rank][dst_node_id] and dst_node_id != self.dist_info.rank]
 
                 if len(dst_nodes) > 0:
                     Multicast(f"{self.uid}_multicast_exp_{batch_id}_{seq_id}", dims=x_slice.dims, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(
@@ -349,7 +282,10 @@ class MoE:
 
         x_recv = {}
         recv_batch_ids = {}
-        for e in self.experts:
+
+        local_experts = list(self.experts.keys())
+        local_experts += ["shared"] if self.shared_expert else []
+        for e in local_experts:
             recv_batch_ids[e] = self.get_batchids_by_expert(seqlen, e)
             
             if len(recv_batch_ids[e]) > 0:
@@ -359,14 +295,6 @@ class MoE:
                     axis=0,
                     uid=concat_uid).forward(stats=stats)
                 
-        if self.shared_expert:
-            batch_ids_for_shared = self.get_batchids_by_expert(seqlen, "shared")
-            concat_uid = self.uid + "_shared_concat_" + hash_string("_".join([f"{batch_id}.{seq_id}" for batch_id, seq_id in batch_ids_for_shared]))
-            x_recv["shared"] = Concat(
-                [Tensor(x.uid + f"_slice{batch_id}.{seq_id}", self.dist_info.rank, [1, 1, hidden_dim]) for batch_id, seq_id in batch_ids_for_shared],
-                axis=0,
-                uid=concat_uid).forward(stats=stats)
-            
         return x_recv
 
     def forward_compute_experts(self, seqlen, x_recv, stats):
@@ -504,7 +432,7 @@ class MoE:
                     # minibatch_ind = np.argwhere(exp_input_batch_ids == (batch_id, seq_id)).item()
                     minibatch_ind = exp_input_batch_ids.index((batch_id, seq_id))
                     
-                    x_slice0 = Slice(exp_outs[expert_id], [minibatch_ind], axis=0, uid=exp_outs[expert_id].uid + f"_slice{batch_id}_seq{seq_id}").forward(stats=stats)
+                    x_slice0 = Slice(exp_outs[expert_id], [minibatch_ind], axis=0, uid=exp_outs[expert_id].uid + f"_slice{batch_id}.{seq_id}").forward(stats=stats)
                     exp_outs_to_send.append(
                         x_slice0
                     )
@@ -575,7 +503,7 @@ class MoE:
         out_batch = Concat(
             out_sums,
             axis=0,
-            uid=self.uid+"_combine_out_concat").forward(stats=stats)
+            uid=f"{self.uid}_combine_out_concat_{self.dist_info.rank}").forward(stats=stats)
 
         assert out_batch.dims[0] == len(batch_ids)
 
@@ -650,10 +578,10 @@ class MoE:
             out_batch = Concat(
                 out_sums,
                 axis=0,
-                uid=self.uid+"_combine_out_concat").forward(stats=stats)
+                uid=f"{self.uid}_combine_out_concat_{self.dist_info.rank}").forward(stats=stats)
         else:
             out_batch = Tensor(
-                f"{self.uid}_combine_out_concat_{self.dist_info.rank}", 
+                f"{self.uid}_empty_combine_out_concat_{self.dist_info.rank}", 
                 self.dist_info.rank, 
                 [0, seqlen, self.hidden_size]
             )
@@ -668,8 +596,9 @@ class MoE:
             if self.dist_info.rank in self.combine_traffic[src_id]:
                 recv_buffer[src_id] = Tensor(f"{self.uid}_unicast_{self.dist_info.rank}_{src_id}", self.dist_info.rank, [len(self.combine_traffic[src_id][self.dist_info.rank]), 1, self.hidden_size])
         
-        out_sums = []
+        out_sums = {}
         for batch_id in batch_ids:
+            out_sums[batch_id] = {}
             mapping = get_moe_gate_model().get_mapping_by_batchids(self.uid, batch_id)
             # mapping = mapping.flatten()
 
@@ -716,29 +645,57 @@ class MoE:
                         axis=0,
                         uid=concat_uid).forward(stats=stats)
 
-                out_sums.append(
-                    Sum(f"{self.uid}_sum_{batch_id}.{seq_id}", dims=x_recv.dims, axis=0, dist_info=self.dist_info, dtype=self.dtype).forward(x_recv, stats=stats)
-                ) 
+                out_sums[batch_id][seq_id] = Sum(f"{self.uid}_sum_{batch_id}.{seq_id}", dims=x_recv.dims, axis=0, dist_info=self.dist_info, dtype=self.dtype).forward(x_recv, stats=stats)
+                
 
         if len(out_sums) > 0:
-            out_batch = Concat(
-                out_sums,
-                axis=0,
+            out_sums_seq = {}
+            for seq_id in range(seqlen):
+                out_sums_batch = [out_sums[batch_id][seq_id] for batch_id in batch_ids]
+                out_sums_seq[seq_id] = Concat(
+                    out_sums_batch,
+                    axis=0,
+                    uid=f"{self.uid}_combine_add_concat_seq{seq_id}"
+                ).forward(stats=stats)
+            out = Concat(
+                [out_sums_seq[seq_id] for seq_id in range(seqlen)],
+                axis=1,
                 uid=f"{self.uid}_combine_out_concat_{self.dist_info.rank}").forward(stats=stats)
         else:
-            out_batch = Tensor(
-                f"{self.uid}_combine_out_concat_{self.dist_info.rank}", 
+            out = Tensor(
+                f"{self.uid}_empty_combine_out_concat_{self.dist_info.rank}", 
                 self.dist_info.rank, 
                 [0, seqlen, self.hidden_size]
             )
-        return out_batch
+        return out
 
-    def forward_distribute_dp(self, x, stats):        
+    def forward_distribute_dp(self, x, stats):
+        _, seqlen, hidden_size = x.dims
+
         multicast_dsts = [dst for dst in self.dist_info.dp_attn_cluster if dst != self.dist_info.rank]
         Multicast(f"{self.uid}_multicast_dp", dims=x.dims, src=self.dist_info.rank, dst=multicast_dsts, dtype=self.dtype).forward(
             x, stats=stats)
-    
-        # Barrier(self.uid+"_barrier_mc", nodes=self.dist_info.dp_attn_cluster).forward(stats=stats) # ensure all nodes in the DP cluster have received the multicast before proceeding
+
+        Barrier(self.uid+"_barrier_mc", nodes=self.dist_info.dp_attn_cluster).forward(stats=stats) # ensure all nodes in the DP cluster have received the multicast before proceeding
+
+        local_batchids = self.dist_info.get_local_batchids("attn")
+
+        x_recv_dp = {}
+        total_bsz = 0
+        for src_id in self.dist_info.dp_attn_cluster:            
+            x_dim_0 = sum([1 for batch_id in local_batchids if self.dist_info.get_batchid_to_dispatch_src(batch_id) == src_id])
+            if x_dim_0 > 0:
+                x_recv_dp[src_id] = Tensor(f"{self.uid}_combine_out_concat_{src_id}", self.dist_info.rank, [x_dim_0, seqlen, hidden_size])
+            total_bsz += x_dim_0
+
+        assert total_bsz == len(local_batchids), "Total batch size received {} does not match local batch size {}".format(total_bsz, len(local_batchids))
+
+        out_tensor = Concat(
+            [x_recv_dp[src_id] for src_id in x_recv_dp],
+            axis=0,
+            uid=f"{self.uid}_combine_out_concat"
+        ).forward(stats=stats)
+        return out_tensor
 
     def forward_compute_expert_noep(self, seqlen, x, stats):
         exp_outs = {}
@@ -768,11 +725,42 @@ class MoE:
         if self.shared_expert:
             exp_outs["shared"] = self.shared_expert.forward(x, stats=stats)
 
+        batch_ids = self.dist_info.get_batch_dist_within_dp()
+        
+        out_sums = []
+        for batch_id in batch_ids:
+            mapping = get_moe_gate_model().get_mapping_by_batchids(self.uid, batch_id)
+            for seq_id in range(seqlen):
+                expert_ids = [expert_id for expert_id in mapping[:, seq_id].tolist()]
+                
+                x_recv = []
+                for expert_id in expert_ids + ["shared"]:
+                    exp_input_batch_ids = self.get_batchids_by_expert(seqlen, expert_id)
+                    buff_ind = exp_input_batch_ids.index((batch_id, seq_id))
+                    x_recv.append(
+                        Slice(exp_outs[expert_id], [buff_ind], axis=0).forward(stats=stats)
+                    )
+
+                assert len(x_recv) == self.num_experts_per_tok + self.n_shared_experts
+                x_recv = Concat(
+                        x_recv, 
+                        axis=0).forward(stats=stats)
+                
+                out_sums.append(
+                    Sum(f"{self.uid}_sum_{batch_id}.{seq_id}", dims=x_recv.dims, axis=0, dist_info=self.dist_info, dtype=self.dtype).forward(x_recv, stats=stats)
+                )
+
+        out_batch = Concat(
+            out_sums,
+            axis=0,
+            uid=f"{self.uid}_combine_out_concat").forward(stats=stats)
+
         logging.debug("Total number of routed samples for device {}: {}".format(self.dist_info.rank_ep, total_moe_num_tokens_per_device))
-        return exp_outs
+        return out_batch
 
     def forward(self, x, stats): 
         _, seqlen, hidden_size = x.dims
+
         self.global_bsz = get_moe_gate_model().global_bsz
         
         # perform MoE gating
@@ -791,11 +779,7 @@ class MoE:
 
             # compute the outputs for each local expert
             exp_outs = self.forward_compute_experts(seqlen, expert_recv_buffs, stats=stats)
-        else:
-            exp_outs = self.forward_compute_expert_noep(seqlen, x, stats=stats)
 
-        # combine the outputs from all experts
-        if self.dist_info.ep > 1:
             if self.dist_info.moe_comm == "allgather":
                 self.calc_combine_allgather_traffic()
                 ag_out = self.forward_combine_allgather(exp_outs, stats=stats)
@@ -818,21 +802,11 @@ class MoE:
                 
                 out_tensor = self.forward_combine_multicast_add(seqlen, exp_outs, stats=stats)
 
-                self.forward_distribute_dp(out_tensor, stats=stats)
-
-                Barrier(self.uid+"_barrier_mc", nodes=self.dist_info.dp_attn_cluster).forward(stats=stats) # ensure all nodes in the DP cluster have received the multicast before proceeding
+                out_tensor = self.forward_distribute_dp(out_tensor, stats=stats)
             else:
                 raise NotImplementedError("MoE communication method {} not implemented".format(self.dist_info.moe_comm))
         else:
-            out_tensor = Tensor(
-                f"{self.uid}_multicast_dp", 
-                self.dist_info.rank,
-                dims=x.dims)
-
-        out_tensor = Tensor(
-            f"{self.uid}_combine_out_concat",
-            self.dist_info.rank,
-            dims=x.dims)
+            out_tensor = self.forward_compute_expert_noep(seqlen, x, stats=stats)
             
         return out_tensor
 
