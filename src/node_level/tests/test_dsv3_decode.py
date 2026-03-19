@@ -1,4 +1,3 @@
-
 import json
 import pytest 
 import logging
@@ -13,13 +12,13 @@ from src.node_level.common.workload import get_moe_gate_model, reset_moe_gate_mo
 from src.node_level.layers.moe import MoE
 from src.core_level.common.graph import Graph
 
-def run_decode(model_config, bsz, seqlen_q, prefill_len, decode_len, tp_attn=1, tp_ffn=1, dp_attn=1, dp_ffn=1, pp=1, ep=1, sp=1, dtype="fp16"):
+def run_decode(model_config, bsz, seqlen_q, prefill_len, decode_len, tp_attn=1, tp_ffn=1, dp_attn=1, dp_ffn=1, pp=1, ep=1, sp=1, moe_comm="alltoall", dtype="fp16"):
     reset_moe_gate_model()
 
     num_nodes = tp_attn * dp_attn * pp * sp
 
     generator = Generator()
-    decode_cfg = SystemConfig().from_args(num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, n_redundant_shared_exp=1, expert_workload_model="uniform", moe_comm="multicast")
+    decode_cfg = SystemConfig().from_args(num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, n_redundant_shared_exp=1, expert_workload_model="uniform", moe_comm=moe_comm)
 
     models = []
     for rank in range(decode_cfg.num_nodes):
@@ -46,21 +45,41 @@ def run_decode(model_config, bsz, seqlen_q, prefill_len, decode_len, tp_attn=1, 
     return total_memory_footprint, total_num_ops, total_hbm_reads, num_activated_experts
 
 @pytest.mark.parametrize(
-    "bsz,seqlen_q,dp_attn,tp_attn,sp,prefill_len,decode_len,dtype", 
+    "bsz,seqlen_q,dp_attn,tp_attn,sp,prefill_len,decode_len,moe_comm,dtype", 
     [
-        (1, 1, 1, 1, 1, 1024, 100, "fp16"), # single-batch, no parallelism
-        (4, 1, 1, 1, 1, 1024, 100, "fp16"), # multi-batch, no parallelism
-        (8, 1, 2, 1, 1, 1024, 100, "fp16"), # DP=2 in attention, EP=2 in FFN
-        (8, 1, 1, 2, 1, 1024, 100, "fp16"), # TP=2 in attention, EP=2 in FFN
-        (8, 1, 1, 1, 2, 1024, 100, "fp16"), # SP=2 in attention, EP=2 in FFN
-        (8, 1, 2, 2, 2, 1024, 100, "fp16"), # DP=2, TP=2, SP=2 in attention, EP=8 in FFN
-        (8, 1, 2, 2, 2, 1024, 100, "fp8"), # fp8
-        (8, 1, 3, 2, 2, 1024, 100, "fp8"), # uneven batch and expert split
-        (128, 1, 3, 2, 2, 1024, 100, "fp8"), # large batch size
-        (8, 2, 3, 2, 2, 1024, 100, "fp8"), # seqlen_q > 1 case, speculative decoding
+        (1, 1, 1, 1, 1, 1024, 100, "multicast", "fp16"), # single-batch, no parallelism
+        (4, 1, 1, 1, 1, 1024, 100, "multicast", "fp16"), # multi-batch, no parallelism
+        (8, 1, 2, 1, 1, 1024, 100, "multicast", "fp16"), # DP=2 in attention, EP=2 in FFN
+        (8, 1, 1, 2, 1, 1024, 100, "multicast", "fp16"), # TP=2 in attention, EP=2 in FFN
+        (8, 1, 1, 1, 2, 1024, 100, "multicast", "fp16"), # SP=2 in attention, EP=2 in FFN
+        (8, 1, 2, 2, 2, 1024, 100, "multicast", "fp16"), # DP=2, TP=2, SP=2 in attention, EP=8 in FFN
+        (8, 1, 2, 2, 2, 1024, 100, "multicast", "fp8"), # fp8
+        (8, 1, 3, 2, 2, 1024, 100, "multicast", "fp8"), # uneven batch and expert split
+        (128, 1, 3, 2, 2, 1024, 100, "multicast", "fp8"), # large batch size
+        (8, 2, 3, 2, 2, 1024, 100, "multicast", "fp8"), # seqlen_q > 1 case, speculative decoding
+        (1, 1, 1, 1, 1, 1024, 100, "alltoall", "fp16"), # single-batch, no parallelism
+        (4, 1, 1, 1, 1, 1024, 100, "alltoall", "fp16"), # multi-batch, no parallelism
+        (8, 1, 2, 1, 1, 1024, 100, "alltoall", "fp16"), # DP=2 in attention, EP=2 in FFN
+        (8, 1, 1, 2, 1, 1024, 100, "alltoall", "fp16"), # TP=2 in attention, EP=2 in FFN
+        (8, 1, 1, 1, 2, 1024, 100, "alltoall", "fp16"), # SP=2 in attention, EP=2 in FFN
+        (8, 1, 2, 2, 2, 1024, 100, "alltoall", "fp16"), # DP=2, TP=2, SP=2 in attention, EP=8 in FFN
+        (8, 1, 2, 2, 2, 1024, 100, "alltoall", "fp8"), # fp8
+        (8, 1, 3, 2, 2, 1024, 100, "alltoall", "fp8"), # uneven batch and expert split
+        (128, 1, 3, 2, 2, 1024, 100, "alltoall", "fp8"), # large batch size
+        (8, 2, 3, 2, 2, 1024, 100, "alltoall", "fp8"), # seqlen_q > 1 case, speculative decoding
+        (1, 1, 1, 1, 1, 1024, 100, "allgather", "fp16"), # single-batch, no parallelism
+        (4, 1, 1, 1, 1, 1024, 100, "allgather", "fp16"), # multi-batch, no parallelism
+        (8, 1, 2, 1, 1, 1024, 100, "allgather", "fp16"), # DP=2 in attention, EP=2 in FFN
+        (8, 1, 1, 2, 1, 1024, 100, "allgather", "fp16"), # TP=2 in attention, EP=2 in FFN
+        (8, 1, 1, 1, 2, 1024, 100, "allgather", "fp16"), # SP=2 in attention, EP=2 in FFN
+        (8, 1, 2, 2, 2, 1024, 100, "allgather", "fp16"), # DP=2, TP=2, SP=2 in attention, EP=8 in FFN
+        (8, 1, 2, 2, 2, 1024, 100, "allgather", "fp8"), # fp8
+        (8, 1, 3, 2, 2, 1024, 100, "allgather", "fp8"), # uneven batch and expert split
+        (128, 1, 3, 2, 2, 1024, 100, "allgather", "fp8"), # large batch size
+        (8, 2, 3, 2, 2, 1024, 100, "allgather", "fp8"), # seqlen_q > 1 case, speculative decoding
     ]
 )
-def test_dsv3_decode(bsz, seqlen_q, dp_attn, tp_attn, sp, prefill_len, decode_len, dtype):
+def test_dsv3_decode(bsz, seqlen_q, dp_attn, tp_attn, sp, prefill_len, decode_len, moe_comm, dtype):
     '''
     This test counts the total number of operations for various EP values and expects it to be the same as single-node execution.
     '''
@@ -78,7 +97,7 @@ def test_dsv3_decode(bsz, seqlen_q, dp_attn, tp_attn, sp, prefill_len, decode_le
     ep = num_nodes
     pp = 1
 
-    _, total_num_ops, total_hbm_reads, num_activated_experts = run_decode(model_config, bsz, seqlen_q, prefill_len, decode_len, dp_attn=dp_attn, tp_attn=tp_attn, sp=sp, dp_ffn=dp_ffn, tp_ffn=tp_ffn, ep=ep, pp=pp, dtype=dtype)
+    _, total_num_ops, total_hbm_reads, num_activated_experts = run_decode(model_config, bsz, seqlen_q, prefill_len, decode_len, dp_attn=dp_attn, tp_attn=tp_attn, sp=sp, dp_ffn=dp_ffn, tp_ffn=tp_ffn, ep=ep, pp=pp, moe_comm=moe_comm, dtype=dtype)
 
     ctx_len = prefill_len + (decode_len -1)
 
@@ -133,7 +152,7 @@ def test_dsv3_decode(bsz, seqlen_q, dp_attn, tp_attn, sp, prefill_len, decode_le
     # LM head weights
     expected_hbm_reads_lmhead = num_nodes * (7168 * 129280 // (tp_attn * sp)) * dtype_to_byte(dtype)
 
-     # 3 first dense layers + 58 MoE layers + 1 LM head
+    # 3 first dense layers + 58 MoE layers + 1 LM head
     expected_hbm_reads = 3 * (expected_hbm_reads_attn + expected_hbm_reads_dense)
     expected_hbm_reads += 58 * (expected_hbm_reads_attn + expected_hbm_reads_moe)
     expected_hbm_reads += expected_hbm_reads_lmhead
@@ -149,4 +168,4 @@ def test_dsv3_decode(bsz, seqlen_q, dp_attn, tp_attn, sp, prefill_len, decode_le
     assert expected_hbm_reads == total_hbm_reads, f"HBM reads mismatch: {expected_hbm_reads} vs {total_hbm_reads}"
 
 if __name__ == "__main__":
-    test_dsv3_decode(8, 2, 2, 2, 2, 1024, 100, "fp8")
+    test_dsv3_decode(8, 2, 3, 2, 2, 1024, 100, "alltoall", "fp8")

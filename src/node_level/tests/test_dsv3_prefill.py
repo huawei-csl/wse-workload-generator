@@ -11,13 +11,13 @@ from src.node_level.common.utils import dtype_to_byte, intceil
 from src.node_level.common.workload import get_moe_gate_model, reset_moe_gate_model
 from src.node_level.layers.moe import MoE
 
-def run_prefill(model_config, bsz, prefill_len, tp_attn=1, tp_ffn=1, dp_attn=1, dp_ffn=1, pp=1, ep=1, sp=1, dtype="fp16"):
+def run_prefill(model_config, bsz, prefill_len, tp_attn=1, tp_ffn=1, dp_attn=1, dp_ffn=1, pp=1, ep=1, sp=1, moe_comm="multicast", dtype="fp16"):
     reset_moe_gate_model()
 
     num_nodes = tp_attn * dp_attn * pp * sp
 
     generator = Generator()
-    cfg = SystemConfig().from_args(num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, n_redundant_shared_exp=1, expert_workload_model="uniform", moe_comm="multicast")
+    cfg = SystemConfig().from_args(num_nodes, dp_attn, dp_ffn, tp_attn, tp_ffn, pp, sp, ep, n_redundant_shared_exp=1, expert_workload_model="uniform", moe_comm=moe_comm)
 
     models = []
     for rank in range(cfg.num_nodes):
@@ -40,15 +40,23 @@ def run_prefill(model_config, bsz, prefill_len, tp_attn=1, tp_ffn=1, dp_attn=1, 
     return total_memory_footprint, total_num_ops, total_hbm_reads, num_activated_experts
 
 @pytest.mark.parametrize(
-    "bsz,dp_attn,tp_attn,sp,prefill_len,dtype", 
+    "bsz,dp_attn,tp_attn,sp,prefill_len,moe_comm,dtype", 
     [
-        (1, 1, 1, 1, 16, "fp16"), # single-batch, no parallelism
-        (2, 1, 1, 1, 16, "fp16"), # multi-batch, no parallelism
-        (8, 2, 2, 2, 16, "fp16"), # DP=2, TP=2, SP=2 in attention, EP=8 in FFN
-        (8, 3, 2, 2, 16, "fp8"), # uneven batch and expert split
+        (1, 1, 1, 1, 16, "multicast", "fp16"), # single-batch, no parallelism
+        (2, 1, 1, 1, 16, "multicast", "fp16"), # multi-batch, no parallelism
+        (8, 2, 2, 2, 16, "multicast", "fp16"), # DP=2, TP=2, SP=2 in attention, EP=8 in FFN
+        (8, 3, 2, 2, 19, "multicast", "fp8"), # uneven batch and expert split
+        (1, 1, 1, 1, 16, "alltoall", "fp16"), # single-batch, no parallelism
+        (2, 1, 1, 1, 16, "alltoall", "fp16"), # multi-batch, no parallelism
+        (8, 2, 2, 2, 16, "alltoall", "fp16"), # DP=2, TP=2, SP=2 in attention, EP=8 in FFN
+        (8, 3, 2, 2, 19, "alltoall", "fp8"), # uneven batch and expert split
+        (1, 1, 1, 1, 16, "allgather", "fp16"), # single-batch, no parallelism
+        (2, 1, 1, 1, 16, "allgather", "fp16"), # multi-batch, no parallelism
+        (8, 2, 2, 2, 16, "allgather", "fp16"), # DP=2, TP=2, SP=2 in attention, EP=8 in FFN
+        (8, 3, 2, 2, 19, "allgather", "fp8"), # uneven batch and expert split
     ]
 )
-def test_dsv3_prefill(bsz, dp_attn, tp_attn, sp, prefill_len, dtype):
+def test_dsv3_prefill(bsz, dp_attn, tp_attn, sp, prefill_len, moe_comm, dtype):
     '''
     This test counts the total number of operations for various EP values and expects it to be the same as single-node execution.
     '''
@@ -67,7 +75,7 @@ def test_dsv3_prefill(bsz, dp_attn, tp_attn, sp, prefill_len, dtype):
     ep = num_nodes
     pp = 1
 
-    _, total_num_ops, total_hbm_reads, num_activated_experts = run_prefill(model_config, bsz, prefill_len, dp_attn=dp_attn, tp_attn=tp_attn, sp=sp, dp_ffn=dp_ffn, tp_ffn=tp_ffn, ep=ep, pp=pp, dtype=dtype)
+    _, total_num_ops, total_hbm_reads, num_activated_experts = run_prefill(model_config, bsz, prefill_len, dp_attn=dp_attn, tp_attn=tp_attn, sp=sp, dp_ffn=dp_ffn, tp_ffn=tp_ffn, ep=ep, pp=pp, moe_comm=moe_comm, dtype=dtype)
 
     # Attention expected number of operations
     flops_wqa = (bsz/dp_attn) * prefill_len * 11010048
@@ -134,4 +142,4 @@ def test_dsv3_prefill(bsz, dp_attn, tp_attn, sp, prefill_len, dtype):
     assert expected_hbm_reads == total_hbm_reads, f"Expected {expected_hbm_reads} HBM reads, but got {total_hbm_reads}"
 
 if __name__=="__main__":
-    test_dsv3_prefill(4, 1, 1, 2, 8, "fp16")
+    test_dsv3_prefill(2, 1, 1, 1, 16, "multicast", "fp16")

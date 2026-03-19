@@ -27,6 +27,9 @@ class AllToAllv:
         assert len(inputs) == len(self.comm_group), "Number of input tensors must match the size of the communication group"
         assert sum([x.dims[0] for x in inputs]) == sum(self.input_split), "Sum of input tensor splits must match sum of input_split"
 
+        for x in inputs:
+            assert x.dims[1:] == inputs[0].dims[1:], "All input tensors must have the same dimensions except for the split dimension"
+
         input_dims = list(inputs[0].dims)
         input_dims[self.axis] = sum([s for i, s in enumerate(self.input_split) if self.rank != i])
 

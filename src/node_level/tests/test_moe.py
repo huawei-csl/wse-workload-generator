@@ -18,18 +18,39 @@ from src.node_level.common.workload import get_moe_gate_model, reset_moe_gate_mo
         (1, 1, 1, 1, 1, "multicast", "fp16"), # single-node test case
         (1, 1, 8, 1, 1, "multicast", "fp16"), # single-batch test case
         (4, 1, 8, 1, 1, "multicast", "fp16"), # multi-batch test case
-        (4, 1, 8, 1, 1, "alltoall", "fp16"), # multi-batch test case, alltoall
-        (4, 1, 8, 1, 1, "allgather", "fp16"), # multi-batch test case, allgather
         (128, 1, 8, 1, 1, "multicast", "fp16"), # large-batch test case
         (128, 1, 8, 2, 1, "multicast", "fp16"), # dp_attn > 1
         (128, 1, 8, 8, 1, "multicast", "fp16"), # dp_attn == ep
         (128, 1, 8, 2, 2, "multicast", "fp16"), # with redundant shared experts
-        (128, 1, 8, 2, 2, "alltoall", "fp16"), # with redundant shared experts, alltoall
-        (128, 1, 8, 2, 2, "allgather", "fp16"), # with redundant shared experts, allgather
         (128, 1, 8, 2, 8, "multicast", "fp16"), # each node has a redundant shared expert
         (128, 1, 56, 14, 4, "multicast", "fp16"), # unbalanced num local experts
         (128, 1, 56, 14, 4, "multicast", "fp8"), # fp8
+        (8, 2, 8, 2, 1, "multicast", "fp8"), # seqlen > 1
         (128, 4, 56, 14, 4, "multicast", "fp8"), # seqlen > 1
+        (1, 1, 1, 1, 1, "alltoall", "fp16"), # single-node test case
+        (1, 1, 8, 1, 1, "alltoall", "fp16"), # single-batch test case
+        (4, 1, 8, 1, 1, "alltoall", "fp16"), # multi-batch test case
+        (128, 1, 8, 1, 1, "alltoall", "fp16"), # large-batch test case
+        (128, 1, 8, 2, 1, "alltoall", "fp16"), # dp_attn > 1
+        (128, 1, 8, 8, 1, "alltoall", "fp16"), # dp_attn == ep
+        (128, 1, 8, 2, 2, "alltoall", "fp16"), # with redundant shared experts
+        (128, 1, 8, 2, 8, "alltoall", "fp16"), # each node has a redundant shared expert
+        (128, 1, 56, 14, 4, "alltoall", "fp16"), # unbalanced num local experts
+        (128, 1, 56, 14, 4, "alltoall", "fp8"), # fp8
+        (8, 2, 8, 2, 1, "alltoall", "fp8"), # seqlen > 1
+        (128, 4, 56, 14, 4, "alltoall", "fp8"), # seqlen > 1
+        (1, 1, 1, 1, 1, "allgather", "fp16"), # single-node test case
+        (1, 1, 8, 1, 1, "allgather", "fp16"), # single-batch test case
+        (4, 1, 8, 1, 1, "allgather", "fp16"), # multi-batch test case
+        (128, 1, 8, 1, 1, "allgather", "fp16"), # large-batch test case
+        (128, 1, 8, 2, 1, "allgather", "fp16"), # dp_attn > 1
+        (128, 1, 8, 8, 1, "allgather", "fp16"), # dp_attn == ep
+        (128, 1, 8, 2, 2, "allgather", "fp16"), # with redundant shared experts
+        (128, 1, 8, 2, 8, "allgather", "fp16"), # each node has a redundant shared expert
+        (128, 1, 56, 14, 4, "allgather", "fp16"), # unbalanced num local experts
+        (128, 1, 56, 14, 4, "allgather", "fp8"), # fp8
+        (8, 2, 8, 2, 1, "allgather", "fp8"), # seqlen > 1
+        (128, 4, 56, 14, 4, "allgather", "fp8"), # seqlen > 1
     ], 
 )
 def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, moe_comm, dtype):
@@ -116,6 +137,14 @@ def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, moe_comm, dtype):
             expected_hbm_reads += 3 * hidden_size * (moe_intermediate_size * n_shared_experts) * dtype_to_byte(dtype) # weights
 
         dispatch_traffic, combine_traffic = moe_layer.routings_summary(seqlen)
+        send_matrix = dist_info.get_combine_comm_matrix("moe_0", get_moe_gate_model(), n_experts, seqlen)
+
+        for src_id in range(len(combine_traffic)):
+            for dst_id in range(len(combine_traffic[src_id])):
+                assert len(combine_traffic[src_id][dst_id]) == len(send_matrix[src_id][dst_id])
+
+                for a, b, c in combine_traffic[src_id][dst_id]:
+                    assert (b, c, a) in send_matrix[src_id][dst_id]
 
         if moe_comm in ["multicast", "alltoall"]:
             expected_network_data = 0
@@ -150,12 +179,4 @@ def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, moe_comm, dtype):
 
 
 if __name__=="__main__":
-    test_moe(
-        bsz=4,
-        seqlen=1,
-        ep=8,
-        dp_attn=2,
-        n_redundant_shared_exp=1,
-        moe_comm="allgather",
-        dtype="fp16"
-    )
+    test_moe(128, 4, 56, 14, 4, "alltoall", "fp8")
