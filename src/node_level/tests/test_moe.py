@@ -96,7 +96,7 @@ def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, moe_comm, dtype):
             dtype=dtype
         )
 
-        batch_ids = dist_info.get_local_batchids("attn")
+        batch_ids = dist_info.get_local_batchids("attn", dist_info.rank)
         local_bsz = len(batch_ids)
 
         x = Tensor("input", dist_info.rank, [bsz, seqlen, hidden_size])
@@ -165,8 +165,10 @@ def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, moe_comm, dtype):
             expected_network_data = 0
             for dst_id in range(len(dispatch_traffic)):
                 if dst_id != src_id:
-                    expected_network_data += 2 * local_bsz * seqlen * hidden_size * dtype_to_byte(dtype) # dispatch 
-            
+                    batch_mapping = dist_info.get_batch_mapping_by_node()
+                    _local_bsz = list(batch_mapping.values()).count(src_id)
+                    expected_network_data += 2 * _local_bsz * seqlen * hidden_size * dtype_to_byte(dtype) # dispatch 
+
             num_tokens = sum([len(combine_traffic[src_id][dst_id]) for dst_id in range(len(combine_traffic))])
             for dst_id in range(len(combine_traffic)):
                 if dst_id != src_id:
@@ -179,4 +181,4 @@ def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, moe_comm, dtype):
 
 
 if __name__=="__main__":
-    test_moe(128, 4, 56, 14, 4, "alltoall", "fp8")
+    test_moe(1, 1, 8, 1, 1, "allgather", "fp8")

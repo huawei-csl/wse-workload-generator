@@ -140,14 +140,24 @@ class DistInfo:
             batch_ids = [batch_id for batch_id, shared_expert_rank in self.batch_to_shared_exp.items() if shared_expert_rank == rank]
             logging.debug("{} samples are mapped to shared expert on rank {}: {}".format(len(batch_ids), rank, batch_ids))
 
+    def get_batch_mapping_by_node(self):
+        batch_mapping_by_node = {} 
+        for rank in range(self.num_nodes):
+            local_batchids = self.get_local_batchids("attn", rank)
+            batch_mapping_by_node.update({local_batchids[0] + batch_id: rank for batch_id in get_itemids_from_bucketid(rank % len(self.dp_attn_cluster), len(local_batchids), len(self.dp_attn_cluster))})
+        return batch_mapping_by_node
+    
     def get_dp_rank_from_batchids(self, batch_ids, layer_type):
         assert layer_type in ["attn", "ffn"], "layer_type must be either 'attn' or 'ffn'"
         return [self.batch_map_dp_rank[layer_type][batch_id] for batch_id in batch_ids]
 
-    def get_local_batchids(self, layer_type):
+    def get_local_batchids(self, layer_type, rank=None):
         ''' batch ids that are mapped to the current node's dp cluster '''
         assert layer_type in ["attn", "ffn"], "layer_type must be either 'attn' or 'ffn'"
-        rank_dp = self.rank_dp_attn if layer_type == "attn" else self.rank_dp_ffn
+        if rank is None:
+            rank_dp = self.rank_dp_attn if layer_type == "attn" else self.rank_dp_ffn
+        else:
+            rank_dp = self.global_cfg.ranks["dp_attn"][rank]
         return [batch_id for batch_id, r in self.batch_map_dp_rank[layer_type].items() if r == rank_dp]
 
     def get_dp_master(self, dp_rank, layer_type):

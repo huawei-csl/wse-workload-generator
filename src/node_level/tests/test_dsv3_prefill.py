@@ -10,6 +10,8 @@ from src.node_level.common.utils import dtype_to_byte, intceil
 
 from src.node_level.common.workload import get_moe_gate_model, reset_moe_gate_model
 from src.node_level.layers.moe import MoE
+from src.core_level.common.graph import Graph
+
 
 def run_prefill(model_config, bsz, prefill_len, tp_attn=1, tp_ffn=1, dp_attn=1, dp_ffn=1, pp=1, ep=1, sp=1, moe_comm="multicast", dtype="fp16"):
     reset_moe_gate_model()
@@ -21,10 +23,13 @@ def run_prefill(model_config, bsz, prefill_len, tp_attn=1, tp_ffn=1, dp_attn=1, 
 
     models = []
     for rank in range(cfg.num_nodes):
-        model = build_model(model_config, cfg.get_dist_info(rank), dtype, layer_ids="all", out_dir=None)
+        model = build_model(model_config, cfg.get_dist_info(rank), dtype, layer_ids="all", out_dir="/tmp/wse_workload_test")
         models.append(model)
 
     generator.prefill(models, bsz, prefill_len)
+
+    # Check if we are able to build the graph correctly
+    Graph(iter=f"prefill", num_nodes=num_nodes, dir=f"/tmp/wse_workload_test/graph")
 
     total_memory_footprint, total_num_ops, total_hbm_reads = 0, 0, 0
     
