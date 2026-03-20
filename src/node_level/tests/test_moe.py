@@ -167,12 +167,12 @@ def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, moe_comm, dtype):
                 if dst_id != src_id:
                     batch_mapping = dist_info.get_batch_mapping_by_node()
                     _local_bsz = list(batch_mapping.values()).count(src_id)
-                    expected_network_data += 2 * _local_bsz * seqlen * hidden_size * dtype_to_byte(dtype) # dispatch 
+                    expected_network_data += _local_bsz * seqlen * hidden_size * dtype_to_byte(dtype) # dispatch 
 
             num_tokens = sum([len(combine_traffic[src_id][dst_id]) for dst_id in range(len(combine_traffic))])
             for dst_id in range(len(combine_traffic)):
                 if dst_id != src_id:
-                    expected_network_data += 2 * num_tokens * hidden_size * dtype_to_byte(dtype) # combine
+                    expected_network_data += num_tokens * hidden_size * dtype_to_byte(dtype) # combine
 
         assert expected_footprint == moe_layer.memory_footprint(), f"Expected memory_footprint {expected_footprint}, got {moe_layer.memory_footprint()}"
         assert expected_num_ops == op_num_ops, f"Expected num_ops {expected_num_ops}, got {op_num_ops}"

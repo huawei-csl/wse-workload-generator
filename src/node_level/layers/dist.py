@@ -1,5 +1,6 @@
 
 import logging
+import time 
 
 from src.node_level.common.tensor import Tensor
 from src.node_level.common.compute_graph import get_compute_graph
@@ -43,22 +44,23 @@ class AllGather:
 
         assert x.dims[0] == self.vector_sizes[self.dist_info.rank]
         
-        # Create buffers for the whole allgather operation
-        # For src -> dst, data is stored at out_buffs[src_id][dst_id]
-        out_buffs = {src_id: {dst_id: Tensor(f"{self.uid}_ag_{src_id}", dst_id, (self.vector_sizes[j], seqlen, hidden_dim)) for i, dst_id in enumerate(self.dst_nodes)} for j, src_id in enumerate(self.dst_nodes)}
+        # Receive buffers. recv_buffs[i] corresponds to the buffer for receiving data from dst_nodes[i]
+        recv_buffs = [Tensor(f"{self.uid}_ag_{src_id}", self.dist_info.rank, (self.vector_sizes[j], seqlen, hidden_dim)) for j, src_id in enumerate(self.dst_nodes)]
+        
+        # Destination tensors. dst_tensors[i] corresponds to the tensor for sending data to dst_nodes[i]
+        dst_buffs = [Tensor(f"{self.uid}_ag_{self.dist_info.rank}", dst_id, (self.vector_sizes[self.dist_info.rank], seqlen, hidden_dim)) for i, dst_id in enumerate(self.dst_nodes)]
 
-        dst_tensors = list(out_buffs[self.dist_info.rank].values())
-
-        n_elem = x.numel()
+        n_elem = x.dims[0] * x.dims[1] * x.dims[2]
         network_size = self.network_data(n_elem*dtype_to_byte(self.dtype))
         stats.append(self.uid, "AllGather", 0, 0, 0, network_size, comm_group=self.dst_nodes, dims=x.dims)
-        get_compute_graph().add_node(self, [x], dst_tensors, attrs=None)
+
+        get_compute_graph().add_node(self, [x], dst_buffs, attrs=None)
 
         # Return receive buffers corresponding to this node as destination
-        return [out_buffs[src_id][self.dist_info.rank] for src_id in self.dst_nodes]
+        return recv_buffs
 
     def network_data(self, tensor_size):
-        vecsize = 2 * tensor_size * (len(self.dst_nodes) - 1) # N-1 vec receive + N-1 vec send, N: no. of devices in a cluster
+        vecsize = tensor_size * (len(self.dst_nodes) - 1) # N-1 vec send, N: no. of devices in a cluster
         logging.debug("network data size (send + receive): {} B".format(vecsize))
         return vecsize # in bytes
 
