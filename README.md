@@ -119,6 +119,8 @@ For example, if node 3 sends a tensor of [4,1,32] in fp16 to node 5, the followi
 
 *_unicast;Unicast;0;0;0;256;5;[4, 1, 32]
 
+NOTE: if src and dst can be the same. In this case, network data will be equal to zero. 
+
 ### Multicast
 
 Sending a copy of a tensor from one source to multiple.

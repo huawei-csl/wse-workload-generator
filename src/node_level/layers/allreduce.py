@@ -50,13 +50,5 @@ class Allreduce:
         return 0
     
     def network_data(self, dims):
-        vector_size = eval("*".join([str(d) for d in dims]))
-        chunk_size = intceil(vector_size / len(self.comm_group)) * dtype_to_byte(self.dtype)
-        traffic_per_node_per_round = 2 * chunk_size # each node sends and receives a chunk in each round
-        num_rounds = len(self.comm_group) - 1
-        traffic_per_node = traffic_per_node_per_round * num_rounds
-
-        total_traffic = 2 * traffic_per_node # one full round for reduce and one full round for gather
-
-        logging.debug("{}: network data size (send + receive) per node: {} B".format(self.uid, total_traffic))
-        return total_traffic # in bytes
+        vector_size = eval("*".join([str(d) for d in dims])) * dtype_to_byte(self.dtype)
+        return vector_size # in bytes

@@ -1,22 +1,6 @@
 {
     "prefill": 
     {
-        "num_nodes": 8,
-        "node_grid": [4,4],
-        "core_grid": [6,6],
-        "dp_attn": 1,
-        "dp_ffn": 4,
-        "tp_attn": 4,
-        "tp_ffn": 2,
-        "pp": 1,
-        "sp": 2,
-        "ep": 1,
-        "n_redundant_shared_exp": 1,
-        "expert_workload_model": "empirical_mmlu",
-        "moe_comm": "allgather"
-    },
-    "decode": 
-    {
         "num_nodes": 56,
         "node_grid": [7,8],
         "core_grid": [6,6],
@@ -27,8 +11,24 @@
         "pp": 1,
         "sp": 4,
         "ep": 56,
-        "n_redundant_shared_exp": 1,
-        "expert_workload_model": "uniform",
+        "n_redundant_shared_exp": 4,
+        "expert_workload_model": "empirical_mmlu",
+        "moe_comm": "alltoall"
+    },
+    "decode": 
+    {
+        "num_nodes": 56,
+        "node_grid": [7,8],
+        "core_grid": [6,6],
+        "dp_attn": 7,
+        "dp_ffn": 1,
+        "tp_attn": 4,
+        "tp_ffn": 1,
+        "pp": 1,
+        "sp": 2,
+        "ep": 56,
+        "n_redundant_shared_exp": 4,
+        "expert_workload_model": "empirical_mmlu",
         "moe_comm": "alltoall"
     }
 }

@@ -48,6 +48,6 @@ class Multicast:
         return 0
     
     def network_data(self):
-        vector_size = eval("*".join([str(d) for d in self.dims])) * len(self.dst) * dtype_to_byte(self.dtype) # a vec of this size is sent from a single source to multiple destinations
+        vector_size = eval("*".join([str(d) for d in self.dims])) * dtype_to_byte(self.dtype) # a vec of this size is sent from a single source to multiple destinations
         logging.debug("{}: network data size: {} B".format(self.uid, vector_size))
         return vector_size # in bytes

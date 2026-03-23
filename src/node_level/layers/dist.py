@@ -10,13 +10,9 @@ class DistManager:
     def __init__(self) -> None:
         self.dist_ops = {}
 
-
     def register_op(self, op):
         if op.uid not in self.dist_ops:
             self.dist_ops[op.uid] = op
-        else:
-            assert self.dist_ops[op.uid]["vector_sizes"] == op.vector_sizes, "Vector sizes must be the same for the same uid"
-            assert self.dist_ops[op.uid]["dst_nodes"] == op.dst_nodes, "Destination nodes must be the same for the same uid"
 
     def allgather(self, uid, x, vector_sizes, dst_nodes, dist_info, dtype, stats=None):
         op = AllGather(uid, vector_sizes, dst_nodes, dist_info, dtype)
@@ -27,7 +23,7 @@ class DistManager:
         op = AllToAllv(uid, dist_info.rank, send_split, recv_split, comm_group, dtype)
         self.register_op(op)
         return op.forward(x, stats)
-    
+
 class AllGather:
     def __init__(self, uid, vector_sizes, dst_nodes, dist_info, dtype) -> None:
         super().__init__()
@@ -55,8 +51,7 @@ class AllGather:
         # Destination tensors. dst_tensors[i] corresponds to the tensor for sending data to dst_nodes[i]
         dst_buffs = [Tensor(f"{self.uid}_ag_{self.dist_info.rank}", dst_id, (self.vector_sizes[self.dist_info.rank], seqlen, hidden_dim)) for i, dst_id in enumerate(self.dst_nodes)]
 
-        n_elem = x.dims[0] * x.dims[1] * x.dims[2]
-        network_size = self.network_data(n_elem*dtype_to_byte(self.dtype))
+        network_size = self.network_data(x.dims)
         stats.append(self.uid, "AllGather", 0, 0, 0, network_size, comm_group=self.dst_nodes, dims=x.dims)
 
         get_compute_graph().add_node(self, [x], dst_buffs, attrs=None)
@@ -64,9 +59,10 @@ class AllGather:
         # Return receive buffers corresponding to this node as destination
         return recv_buffs
 
-    def network_data(self, tensor_size):
-        vecsize = tensor_size * (len(self.dst_nodes) - 1) # N-1 vec send, N: no. of devices in a cluster
-        logging.debug("network data size (send + receive): {} B".format(vecsize))
+    def network_data(self, dims):
+        n_elem = eval("*".join([str(d) for d in dims]))
+        vecsize = n_elem * dtype_to_byte(self.dtype)
+        logging.debug("network data size (send): {} B".format(vecsize))
         return vecsize # in bytes
 
 
@@ -97,10 +93,10 @@ class AllToAllv:
             assert _x.dims[1:] == x[0].dims[1:], "All input tensors must have the same dimensions except for the split dimension"
 
         input_dims = list(x[0].dims)
-        input_dims[self.axis] = sum([s for i, s in enumerate(self.send_split) if self.rank != i])
+        input_dims[self.axis] = sum([s for i, s in enumerate(self.send_split)])
 
         output_dims = list(x[0].dims)
-        output_dims[self.axis] = sum([s for i, s in enumerate(self.recv_split) if self.rank != i])
+        output_dims[self.axis] = sum([s for i, s in enumerate(self.recv_split)])
 
         network_data = self.network_data(input_dims, output_dims)
         
@@ -123,13 +119,12 @@ class AllToAllv:
         return recv_buffs
     
     def network_data(self, input_dims, output_dims):
-        input_size = eval("*".join([str(d) for d in input_dims])) * dtype_to_byte(self.dtype)
+        data_size = sum([s for i, s in enumerate(self.send_split) if i != self.rank])
+        input_size = data_size * eval("*".join([str(d) for d in input_dims[1:]])) * dtype_to_byte(self.dtype)
         # output_size = eval("*".join([str(d) for d in output_dims])) * dtype_to_byte(self.dtype)
         network_size = input_size # total data size that is sent from this node
-        logging.debug("{}: network data size (send + receive): {} B".format(self.uid, network_size))
+        logging.debug("{}: network data size (send): {} B".format(self.uid, network_size))
         return network_size # in bytes
-
-
 
 dist_manager = None
 def get_dist_manager():

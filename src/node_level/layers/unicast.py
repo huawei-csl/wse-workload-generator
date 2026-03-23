@@ -46,6 +46,8 @@ class Unicast:
         return 0
     
     def network_data(self):
+        if self.src == self.dst:
+            return 0
         vecsize = eval("*".join([str(d) for d in self.dims])) * dtype_to_byte(self.dtype) # a vec of this size is sent from a single source to multiple destionations
         logging.debug("{}: network data size: {} B".format(self.uid, vecsize))
         return vecsize # in bytes
