@@ -146,33 +146,47 @@ def test_moe(bsz, seqlen, ep, dp_attn, n_redundant_shared_exp, moe_comm, dtype):
                 for a, b, c in combine_traffic[src_id][dst_id]:
                     assert (b, c, a) in send_matrix[src_id][dst_id]
 
-        if moe_comm in ["multicast", "alltoall"]:
+        if moe_comm == "multicast" in ["multicast", "alltoall"]:
             expected_network_data = 0
-            src_id = rank
-            for dst_id in range(len(dispatch_traffic)):
-                if dst_id != src_id:
-                    expected_network_data += len(dispatch_traffic[src_id][dst_id]) * hidden_size * dtype_to_byte(dtype)
 
-            for dst_id in range(len(combine_traffic)):
-                if dst_id != src_id:
-                    expected_network_data += len(combine_traffic[src_id][dst_id]) * hidden_size * dtype_to_byte(dtype)
+            if num_nodes > 1:
+                src_id = rank
 
-            dp_attn_cluster_size = len(dist_info.dp_attn_cluster)
-            expected_network_data += len(dist_info.get_batch_dist_within_dp()) * seqlen * hidden_size * dtype_to_byte(dtype) * (dp_attn_cluster_size-1)
+                batch_ids = dist_info.get_batch_dist_within_dp()
+                expected_network_data = len(batch_ids) * seqlen * hidden_size * dtype_to_byte(dtype) 
+
+                for dst_id in range(len(combine_traffic)):
+                    if dst_id != src_id:
+                        expected_network_data += len(combine_traffic[src_id][dst_id]) * hidden_size * dtype_to_byte(dtype)
+
+                expected_network_data += len(batch_ids) * seqlen * hidden_size * dtype_to_byte(dtype)
+
+        elif moe_comm == "alltoall":
+            expected_network_data = 0
+
+            if num_nodes > 1:
+                src_id = rank
+
+                for dst_id in range(len(dispatch_traffic)):
+                    if dst_id != src_id:
+                        expected_network_data += len(dispatch_traffic[src_id][dst_id]) * hidden_size * dtype_to_byte(dtype)
+
+                for dst_id in range(len(combine_traffic)):
+                    if dst_id != src_id:
+                        expected_network_data += len(combine_traffic[src_id][dst_id]) * hidden_size * dtype_to_byte(dtype)
+
+                expected_network_data += len(dist_info.get_batch_dist_within_dp()) * seqlen * hidden_size * dtype_to_byte(dtype)            
         else:
-            src_id = rank
-
             expected_network_data = 0
-            for dst_id in range(len(dispatch_traffic)):
-                if dst_id != src_id:
-                    batch_mapping = dist_info.get_batch_mapping_by_node()
-                    _local_bsz = list(batch_mapping.values()).count(src_id)
-                    expected_network_data += _local_bsz * seqlen * hidden_size * dtype_to_byte(dtype) # dispatch 
 
-            num_tokens = sum([len(combine_traffic[src_id][dst_id]) for dst_id in range(len(combine_traffic))])
-            for dst_id in range(len(combine_traffic)):
-                if dst_id != src_id:
-                    expected_network_data += num_tokens * hidden_size * dtype_to_byte(dtype) # combine
+            if num_nodes > 1:
+                src_id = rank
+                batch_mapping = dist_info.get_batch_mapping_by_node()
+                num_tokens = list(batch_mapping.values()).count(src_id)
+                expected_network_data += num_tokens * seqlen * hidden_size * dtype_to_byte(dtype) # dispatch 
+
+                num_tokens = sum([len(combine_traffic[src_id][dst_id]) for dst_id in range(len(combine_traffic))])
+                expected_network_data += num_tokens * hidden_size * dtype_to_byte(dtype) # combine
 
         assert expected_footprint == moe_layer.memory_footprint(), f"Expected memory_footprint {expected_footprint}, got {moe_layer.memory_footprint()}"
         assert expected_num_ops == op_num_ops, f"Expected num_ops {expected_num_ops}, got {op_num_ops}"

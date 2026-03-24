@@ -131,7 +131,7 @@ def test_dsv3_prefill(bsz, dp_attn, tp_attn, sp, prefill_len, moe_comm, dtype):
     # LM head weights
     expected_hbm_reads_lmhead = num_nodes * (7168 * 129280 // (tp_attn * sp)) * dtype_to_byte(dtype)
 
-     # 3 first dense layers + 58 MoE layers + 1 LM head
+    # 3 first dense layers + 58 MoE layers + 1 LM head
     expected_hbm_reads = 3 * (expected_hbm_reads_attn + expected_hbm_reads_dense)
     expected_hbm_reads += 58 * (expected_hbm_reads_attn + expected_hbm_reads_moe)
     expected_hbm_reads += expected_hbm_reads_lmhead

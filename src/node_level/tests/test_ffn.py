@@ -54,11 +54,16 @@ def test_ffn(bsz, hidden_size, intermediate_size, tp_ffn, ep, dtype):
         local_inter_size = intceil(intermediate_size / par_factor)
         ffn_comm_size = len(comm_group)
 
+        network_data = 0
+        if ffn_comm_size > 1:
+            network_data += (local_bsz * seqlen * hidden_size) * dtype_to_byte(dtype) # allreduce for tp_ffn
+
         expected = {
             "memory_footprint": 3 * hidden_size * local_inter_size * dtype_to_byte(dtype), # weights only
             "num_ops": 3 * local_bsz * seqlen * hidden_size * local_inter_size, # in terms of MACs
             "hbm_reads": 3 * hidden_size * local_inter_size * dtype_to_byte(dtype), # weights only
-            "network_data": 4 * intceil( (local_bsz * seqlen * hidden_size) / ffn_comm_size) * (ffn_comm_size -1) * dtype_to_byte(dtype) # allreduce for tp_ffn
+            "network_data": network_data
+            # "network_data": 4 * intceil( (local_bsz * seqlen * hidden_size) / ffn_comm_size) * (ffn_comm_size -1) * dtype_to_byte(dtype) # allreduce for tp_ffn
         }
 
         op_mem_foot, op_num_ops, op_hbm_reads, op_net_data = op._stats.sumUp()
@@ -114,11 +119,16 @@ def test_dense_ffn(bsz, hidden_size, intermediate_size, dp_attn, tp_attn, sp, dt
         local_inter_size = intceil(intermediate_size / par_factor)
         ffn_comm_size = par_factor
 
+        network_data = 0
+        if ffn_comm_size > 1:
+            network_data += (local_bsz * seqlen * hidden_size) * dtype_to_byte(dtype) # allreduce for tp_ffn
+
         expected = {
             "memory_footprint": 3 * hidden_size * local_inter_size * dtype_to_byte(dtype), # weights only
             "num_ops": 3 * local_bsz * seqlen * hidden_size * local_inter_size, # in terms of MACs
             "hbm_reads": 3 * hidden_size * local_inter_size * dtype_to_byte(dtype), # weights only
-            "network_data": 4 * intceil( (local_bsz * seqlen * hidden_size) / ffn_comm_size) * (ffn_comm_size -1) * dtype_to_byte(dtype) # allreduce for tp_ffn
+            "network_data": network_data
+            # "network_data": 4 * intceil( (local_bsz * seqlen * hidden_size) / ffn_comm_size) * (ffn_comm_size -1) * dtype_to_byte(dtype) # allreduce for tp_ffn
         }
 
         op_mem_foot, op_num_ops, op_hbm_reads, op_net_data = op._stats.sumUp()

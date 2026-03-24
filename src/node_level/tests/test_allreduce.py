@@ -34,10 +34,7 @@ def test_allreduce(dims, comm_group, dtype):
     comm_group_size = len(comm_group)
     vecsize = eval("*".join([str(d) for d in dims])) 
     expected = {
-        # Assuming ring algorithm, each node sends and receives vecsize / len(comm_group) in each round
-        # Both reduce and gather phases takes (len(comm_group) - 1) rounds
-        # Thus, total network data per node = 4 * vecsize / len(comm_group) * (len(comm_group) - 1)  
-        "network_data": 4 * intceil(vecsize / comm_group_size) * (comm_group_size -1) * dtype_to_byte(dtype)
+        "network_data": vecsize * dtype_to_byte(dtype)
     }
 
     assert out_tensor.dims == x.dims

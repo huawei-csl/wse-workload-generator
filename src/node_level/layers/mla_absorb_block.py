@@ -150,11 +150,18 @@ class MLAAbsorbBlock:
 
         hbm_reads = memory_footprint
 
-        sp_comm_size = len(self.dist_info.attn_comm_groups["sp"])
-        tp_comm_size = len(self.dist_info.attn_comm_groups["tp_attn"])
+        # sp_comm_size = len(self.dist_info.attn_comm_groups["sp"])
+        # tp_comm_size = len(self.dist_info.attn_comm_groups["tp_attn"])
         
-        network_data = 4 * intceil( (local_bsz * seqlen * self.n_local_heads * self.kv_lora_rank) / sp_comm_size) * (sp_comm_size -1) * dtype_to_byte(self.dtype) # allreduce_sp
-        network_data += 4 * intceil( (local_bsz * seqlen * self.hidden_size) / tp_comm_size) * (tp_comm_size -1) * dtype_to_byte(self.dtype) # allreduce_tp
+        # network_data = 4 * intceil( (local_bsz * seqlen * self.n_local_heads * self.kv_lora_rank) / sp_comm_size) * (sp_comm_size -1) * dtype_to_byte(self.dtype) # allreduce_sp
+        # network_data += 4 * intceil( (local_bsz * seqlen * self.hidden_size) / tp_comm_size) * (tp_comm_size -1) * dtype_to_byte(self.dtype) # allreduce_tp
+
+        network_data = 0
+        if self.dist_info.sp > 1:
+            network_data += (local_bsz * seqlen * self.n_local_heads * self.kv_lora_rank) * dtype_to_byte(self.dtype)
+        
+        if self.dist_info.tp_attn > 1:
+            network_data += (local_bsz * seqlen * self.hidden_size) * dtype_to_byte(self.dtype)
 
         expected = {
             "memory_footprint": memory_footprint,
