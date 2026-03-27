@@ -33,6 +33,7 @@ if __name__=="__main__":
     argparser.add_argument("--decode_len", type=int, default=10, help="decode length")
     argparser.add_argument("--spec_dec", type=int, default=0, help="speculative decoding length, 0 means no speculative decoding")
     argparser.add_argument("--only_decode", type=int, choices=[0,1], default=1, help="1: skips prefill, 0: run both prefill and decode")
+    argparser.add_argument("--only_prefill", type=int, choices=[0,1], default=0, help="1: skips decode, 0: run both prefill and decode")
     argparser.add_argument("--simplified_decode", type=int, choices=[0,1], default=1, help="0: full decode run, 1: run only first and last decode iterations, rest can be interpolated")
     argparser.add_argument("--nodes", type=str, default="all", help="nodes to run, e.g., 'all', '0,1,2', '0-3' (for 4 nodes), '0-3,5' (for 5 nodes)")
     argparser.add_argument("--layers", type=str, default="all", help="layers to simulate, e.g., 'all', 'decode0,decode1,decode2'")
@@ -40,6 +41,8 @@ if __name__=="__main__":
     argparser.add_argument("--log", choices=["debug", "info", "error"], default="info", help="logging level")
     argparser.add_argument("--outdir", type=str, default="./output", help="directory for generated files")
     args = argparser.parse_args()
+
+    assert not (args.only_decode and args.only_prefill), "only_decode and only_prefill cannot be both 1"
 
     init_logger(level=args.log.upper(), path='logs/generate_nodes.log')
 
@@ -69,20 +72,21 @@ if __name__=="__main__":
 
         generator.prefill(prefill_models, args.bsz, args.prefill_len)
 
-    decode_cfg = SystemConfig().from_json(args.system_config, mode="decode")
-    nodes = nodes_to_simulate(args.nodes, decode_cfg.num_nodes)
+    if not args.only_prefill:
+        decode_cfg = SystemConfig().from_json(args.system_config, mode="decode")
+        nodes = nodes_to_simulate(args.nodes, decode_cfg.num_nodes)
 
-    decode_models = []
-    footprint_list = []
-    for rank in nodes:
-        model = build_model(model_config, decode_cfg.get_dist_info(rank), args.dtype, args.layers, out_dir)
-        footprint = model.memory_footprint(args.bsz, args.prefill_len+args.decode_len)
-        logging.info("rank: {} HBM footprint: {:.2f} GB".format(rank, footprint/1024/1024/1024))
-        decode_models.append(model)
-        footprint_list.append(footprint)
+        decode_models = []
+        footprint_list = []
+        for rank in nodes:
+            model = build_model(model_config, decode_cfg.get_dist_info(rank), args.dtype, args.layers, out_dir)
+            footprint = model.memory_footprint(args.bsz, args.prefill_len+args.decode_len)
+            logging.info("rank: {} HBM footprint: {:.2f} GB".format(rank, footprint/1024/1024/1024))
+            decode_models.append(model)
+            footprint_list.append(footprint)
 
-    with open(args.outdir+"/footprint.json", "w") as f:
-        json.dump(footprint_list, f)
+        with open(args.outdir+"/footprint.json", "w") as f:
+            json.dump(footprint_list, f)
 
-    seqlen_q = 1 + args.spec_dec
-    generator.decode(decode_models, args.bsz, seqlen_q, args.prefill_len, args.decode_len, args.simplified_decode)
+        seqlen_q = 1 + args.spec_dec
+        generator.decode(decode_models, args.bsz, seqlen_q, args.prefill_len, args.decode_len, args.simplified_decode)
