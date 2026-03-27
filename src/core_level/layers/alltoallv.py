@@ -41,8 +41,6 @@ class AlltoAllv:
             
                 if tile_size is None:
                     tile_size = list(input.tile_size)
-                else:
-                    assert tile_size == list(input.tile_size), "All input tensors of AlltoAllv operation {} on node {} must have the same tile size".format(uid, node_id)
 
         self.tile_size = tile_size
 
