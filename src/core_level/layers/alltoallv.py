@@ -128,7 +128,7 @@ class AlltoAllv:
         for d, dst in enumerate(self.comm_group):
             if self.output_tensors[d].is_empty():
                 continue
-            self.output_tensors[d].map_to_memory(self.wafer.banks[dst], tile_size=self.tile_size, addr_offset=0)
+            self.output_tensors[d].map_to_memory(self.wafer.banks[dst], tile_size=list(self.input_tensors[d].tile_size), addr_offset=0)
 
         if len(self.dims) == 1:
             _create1d(self)
