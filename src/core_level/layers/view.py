@@ -164,11 +164,7 @@ class View:
         n_indices = 1
         for i in range(len(self.output_dims)):
             expected = intceil(self.output_dims[i]/new_tile_size[i])
-            if len(tmp_map) != expected:
-                raise AssertionError("Memory map size does not match tensor dimensions and tile size. "
-                    f"uid={self.uid} node={self.node_id} dim[{i}]: map has {len(tmp_map)} entries, "
-                    f"expected {expected} (output_dims={self.output_dims}, new_tile_size={new_tile_size}, "
-                    f"input_dims={self.input_dims}, input_tile_size={self.input_tensor.tile_size})")
+            assert len(tmp_map) == expected, f"View {self.uid} node {self.node_id}: memory map dim[{i}] has {len(tmp_map)} entries, expected {expected}"
             tmp_map = tmp_map[0]
             n_indices *= len(tmp_map)
 
