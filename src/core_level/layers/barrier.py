@@ -23,7 +23,7 @@ class Barrier:
     def get_traces(self) -> List[str]:
         traces = []
 
-        hash = hashlib.md5((self.id + "_".join(map(str, self.group))).encode()).hexdigest()[:4]
+        hash = hashlib.md5((self.id + "_".join(map(str, self.group))).encode()).hexdigest()[:16]
         traces.append(InstructionSet.BARRIER(hash, self.id))
         return traces
 

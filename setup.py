@@ -7,7 +7,8 @@ setup(
     author="Ahmet Caner Yuzuguler",
     author_email="ahmet.yuzuguler@huawei.com",
     description="A trace generator for WSE workload simulations",
-    packages=find_packages(),  # Automatically find sub-packages
+    packages=find_packages(),
+    package_data={"configs": ["*.json"]},
     python_requires=">=3.7",  # Specify Python version compatibility
     install_requires=[
         "numpy>=1.21.0",
