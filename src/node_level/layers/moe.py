@@ -93,6 +93,7 @@ class MoE:
             dtype=self.dtype,
             stats=stats
         )
+        Barrier(self.uid+"_barrier_disp_ag", nodes=self.dist_info.ffn_comm_groups["ep"]).forward(stats=stats) # ensure all nodes have received the allgather before proceeding
 
         local_experts = list(self.experts.keys())
         local_experts += ["shared"] if self.shared_expert else []
@@ -168,6 +169,7 @@ class MoE:
             dtype=self.dtype,
             stats=stats
         )
+        Barrier(self.uid+"_barrier_disp_a2a", nodes=self.dist_info.ffn_comm_groups["ep"]).forward(stats=stats) # ensure all nodes have received the alltoall before proceeding
 
         x_recv = {}
         local_experts = list(self.experts.keys())
@@ -216,8 +218,8 @@ class MoE:
                     Multicast(f"{self.uid}_multicast_exp_{batch_id}_{seq_id}", dims=x_slice.dims, src=self.dist_info.rank, dst=dst_nodes, dtype=self.dtype).forward(
                         x_slice, stats=stats)
 
-        Barrier(self.uid+"_barrier", nodes=list(range(self.dist_info.num_nodes))).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
-
+        Barrier(self.uid+"_barrier_disp_mc", nodes=self.dist_info.ffn_comm_groups["ep"]).forward(stats=stats) # ensure all nodes have received the multicast before proceeding
+        
         x_recv = {}
         recv_batch_ids = {}
 
@@ -288,7 +290,6 @@ class MoE:
                     for seq_id in range(seqlen):
                         out_indices[(batch_id, seq_id)] += [("shared", src_id, len(src_buff[src_id])-1)]
         
-        # out_tensor = self.allgather_combine.forward(x_local, stats=stats)
         out_ag = get_dist_manager().allgather(
             uid=self.uid+"_ag_comb",
             x=x_local,
@@ -298,6 +299,7 @@ class MoE:
             dtype=self.dtype,
             stats=stats
         )
+        Barrier(self.uid+"_barrier_combine_ag", nodes=self.dist_info.ffn_comm_groups["ep"]).forward(stats=stats)
 
         # batch ids processed by this DP cluster
         batch_ids_by_dp_rank = self.dist_info.get_local_batchids("attn", self.rank)
@@ -374,6 +376,8 @@ class MoE:
             dtype=self.dtype,
             stats=stats
         )
+        Barrier(self.uid+"_barrier_combine_a2a", nodes=self.dist_info.ffn_comm_groups["ep"]).forward(stats=stats)
+
         batch_ids = self.dist_info.get_batch_dist_within_dp()
 
         x_recv = {}
