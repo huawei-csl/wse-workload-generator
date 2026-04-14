@@ -20,11 +20,13 @@ class Llama(Model):
 
         num_layers_per_device = divide_equal(self.num_hidden_layers, dist_info.pp)[dist_info.rank_pp]
 
+        layer_id_set = set(layer_ids.split(","))
+
         self.layers = []
         for l in range(dist_info.rank_pp*num_layers_per_device, (dist_info.rank_pp+1)*num_layers_per_device):
 
             layer_id = "decode" + str(l)
-            if "all" not in layer_ids and layer_id not in layer_ids:
+            if "all" not in layer_id_set and layer_id not in layer_id_set:
                 continue
 
             self.layers.append(
@@ -39,7 +41,7 @@ class Llama(Model):
                 )
             )
 
-        if "all" in layer_ids or "lm_head" in layer_ids:
+        if "all" in layer_id_set or "lm_head" in layer_id_set:
             self.head = LMHead(layer_id="lm_head",
                     hidden_size=self.hidden_size,
                     vocab_size=self.vocab_size,
