@@ -32,13 +32,15 @@ class DeepSeekv3(Model):
 
         num_layers_per_device = divide_equal(self.num_hidden_layers, dist_info.pp)[dist_info.rank_pp]
 
+        layer_id_set = set(layer_ids.split(","))
+
         self.layers = []
         moe_layer_ids = []
         for l in range(dist_info.rank_pp*num_layers_per_device, (dist_info.rank_pp+1)*num_layers_per_device):
-            is_moe = l >= self.num_dense_layers 
+            is_moe = l >= self.num_dense_layers
 
             layer_id = "decode" + str(l)
-            if "all" not in layer_ids and layer_id not in layer_ids:
+            if "all" not in layer_id_set and layer_id not in layer_id_set:
                 continue
 
             self.layers.append(
@@ -62,7 +64,7 @@ class DeepSeekv3(Model):
                     )
                 )
             
-        if "all" in layer_ids or "lm_head" in layer_ids:
+        if "all" in layer_id_set or "lm_head" in layer_id_set:
             # Consider head as a dense FFN layer
             self.head = LMHead(
                 layer_id="lm_head",
