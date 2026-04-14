@@ -54,8 +54,6 @@ class MoE:
         if expert_id == "shared":
             batch_ids = sorted(np.array([batch_id for batch_id, mapped_shared in self.dist_info.batch_to_shared_exp.items() if self.rank == mapped_shared]))
             batch_ids = [(b, s) for b in batch_ids for s in range(seqlen)]
-            
-            assert len(batch_ids) > 0
         else:
             expert_routings = get_moe_gate_model().get_expert_routings(layer_id=self.uid)
             batch_ids = list(zip(np.where(expert_routings==expert_id)[1], np.where(expert_routings==expert_id)[2]))
@@ -252,7 +250,8 @@ class MoE:
             total_moe_num_tokens_per_device += len(recv_batch_ids[e])
 
         if self.shared_expert:
-            exp_outs["shared"] = self.shared_expert.forward(x_recv['shared'], stats=stats)
+            if len(self.get_batchids_by_expert(seqlen, "shared")) > 0:
+                exp_outs["shared"] = self.shared_expert.forward(x_recv['shared'], stats=stats)
 
         logging.debug("Total number of routed samples for device {}: {}".format(self.dist_info.rank_ep, total_moe_num_tokens_per_device))
         return exp_outs
@@ -539,11 +538,18 @@ class MoE:
 
         assert total_bsz == len(local_batchids), "Total batch size received {} does not match local batch size {}".format(total_bsz, len(local_batchids))
 
-        out_tensor = Concat(
-            [x_recv_dp[src_id] for src_id in x_recv_dp],
-            axis=0,
-            uid=f"{self.uid}_combine_out_concat"
-        ).forward(stats=stats)
+        if len(x_recv_dp) > 0:
+            out_tensor = Concat(
+                [x_recv_dp[src_id] for src_id in x_recv_dp],
+                axis=0,
+                uid=f"{self.uid}_combine_out_concat"
+            ).forward(stats=stats)
+        else:
+            out_tensor = Tensor(
+                f"{self.uid}_empty_combine_out_concat_{self.dist_info.rank}", 
+                self.dist_info.rank, 
+                [0, seqlen, self.hidden_size]
+            )
         return out_tensor
 
     def forward_compute_expert_noep(self, seqlen, x, stats):

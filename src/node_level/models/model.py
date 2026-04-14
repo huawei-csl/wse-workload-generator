@@ -33,7 +33,7 @@ class Model:
 
     def forward(self, queries, ctx_len, iter_id):
         bsz, seqlen, _ = queries.dims
-        assert bsz >= self.dist_info.dp_attn, "dp_attn should not be smaller than batch size"
+        # assert bsz >= self.dist_info.dp_attn, "dp_attn should not be smaller than batch size"
 
         self.dist_info.batch_mapping(bsz)
         self.new_iter(iter_id, bsz, seqlen)
@@ -46,9 +46,10 @@ class Model:
 
         batch_ids = self.dist_info.get_local_batchids("attn")
         x = Slice(x, batch_ids, axis=0).forward(self.stats)
-
+        
         for l in range(len(self.layers)):
             x = self.layers[l].forward(x, ctx_len, self.stats)
+            
         if self.head:
             self.head.forward(x, self.stats)
 

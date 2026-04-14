@@ -149,33 +149,41 @@ class Slice:
             assert step == 1, "Only support step size of 1 for now"
             return (indices[0], indices[-1]+1)
 
-        assert len(indices) > 0, "Indices list cannot be empty"
+        # assert len(indices) > 0, "Indices list cannot be empty"
         assert -len(input_tensor.dims) < axis < len(input_tensor.dims), "Axis out of bounds"
         if axis < 0:
             axis += len(input_tensor.dims)
         
         self.axis = axis
 
-        index_rng = convert_to_range(indices)
-        assert index_rng is not None, "Indices must form a valid range with consistent step size"
-        self.index_rng = index_rng
-
-        assert index_rng[1] <= input_tensor.dims[axis], "Index out of range"
-
-        self.input_tensor = input_tensor
-
         self.new_dims = list(input_tensor.dims)
         self.new_dims[axis] = len(indices)
 
-        if uid is None:
-            if len(indices) == 1:
-                self.uid = input_tensor.uid + f"_slice{index_rng[0]}"
-            else:
-                self.uid = input_tensor.uid + f"_slice{index_rng[0]}:{index_rng[1]}"
-        else:
-            self.uid = uid
+        self.input_tensor = input_tensor
 
-        self.output_tensor = Tensor(self.uid, input_tensor.node_id, list(self.new_dims))
+        if len(indices) == 0:
+            if uid is None: 
+                self.uid = input_tensor.uid + f"_empty"
+            else:
+                self.uid = uid + f"_empty"
+            self.index_rng = (0, 0)
+            self.output_tensor = Tensor(self.uid, input_tensor.node_id, list(self.new_dims))
+        else:
+            index_rng = convert_to_range(indices)
+            assert index_rng is not None, "Indices must form a valid range with consistent step size"
+            self.index_rng = index_rng
+
+            assert index_rng[1] <= input_tensor.dims[axis], "Index out of range"
+
+            if uid is None:
+                if len(indices) == 1:
+                    self.uid = input_tensor.uid + f"_slice{index_rng[0]}"
+                else:
+                    self.uid = input_tensor.uid + f"_slice{index_rng[0]}:{index_rng[1]}"
+            else:
+                self.uid = uid
+
+            self.output_tensor = Tensor(self.uid, input_tensor.node_id, list(self.new_dims))
 
     def forward(self, stats):
         stats.append(self.uid, "Slice", 0, 0, 0, 0, comm_group=None, dims=f"{self.input_tensor.dims} -> {self.axis} -> {self.index_rng[0]}:{self.index_rng[1]}")

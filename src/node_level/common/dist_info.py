@@ -121,7 +121,7 @@ class DistInfo:
         return {expert_id: get_bucketid_from_itemid(expert_id, n_experts, self.ep) for expert_id in range(n_experts)}
 
     def batch_mapping(self, bsz):
-        assert bsz >= self.dp_attn and bsz >= self.dp_ffn, "Batch size must be larger than dp_attn and dp_ffn"
+        # assert bsz >= self.dp_attn and bsz >= self.dp_ffn, "Batch size must be larger than dp_attn and dp_ffn"
 
         self.batch_map_dp_rank = {"attn": {}, "ffn": {}}
 
