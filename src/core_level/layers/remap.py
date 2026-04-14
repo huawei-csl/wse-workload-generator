@@ -46,13 +46,13 @@ class Remap:
             rng = [(starts[i], ends[i]) for i in range(len(ind))]
 
             physical_addresses = self.input_tensor.get_physical_address(rng)
-            assert len(physical_addresses) == 1, "Remap operation {} on node {} requires input tile to be mapped to a single physical bank, got {} banks for tile range {}.".format(self.uid, self.node_id, len(physical_addresses), rng)
 
-            # largest_bank = max(physical_addresses, key=lambda k: physical_addresses[k])
+            # Pick the bank holding the most data for this tile range
+            largest_bank = max(physical_addresses, key=lambda k: physical_addresses[k])
 
             val = {
                 "range": rng,
-                "bank": list(physical_addresses.keys())[0],
+                "bank": largest_bank,
             }
 
             set_dict_val(out_map, ind, {"range": val["range"], "bank": list(physical_addresses.keys())[0]})

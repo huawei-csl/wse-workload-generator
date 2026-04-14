@@ -24,6 +24,9 @@ class Core:
         self.instruction_queue = []
         self.traces = []
 
+    def __str__(self):
+        return str(self.core_id)
+
     def add_instruction(self, tile_op: "TileGemmOp"):
         self.instruction_queue.append(tile_op)
         traces = tile_op.get_traces()
