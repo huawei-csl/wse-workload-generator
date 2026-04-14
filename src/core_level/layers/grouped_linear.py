@@ -9,6 +9,7 @@ from src.core_level.common.graph import get_compute_graph
 from src.core_level.common.tensor import Tensor
 from src.core_level.common.tile import load_tiling_config
 from src.core_level.common.wafer import Core
+from src.core_level.layers.barrier import Barrier
 from src.core_level.layers.reduce import TileReduceOp
 from src.core_level.common.isa import InstructionSet
 from src.core_level.common.stats import Stats
@@ -290,6 +291,24 @@ class GroupedLinearLayer:
 
                         self.tile_ops[b][m][k][n].map_to_core(self.wafer.get_core(self.node_id, core_id))
                         self.stats.merge(self.tile_ops[b][m][k][n].stats)
+
+        # Insert barriers between GEMM and reduce phases for split-K synchronization
+        for b in self.reduce_ops:
+            for m in self.reduce_ops[b]:
+                for n in self.reduce_ops[b][m]:
+                    cores_in_group = []
+                    for k in self.tile_ops[b][m]:
+                        c = self.tile_ops[b][m][k][n].mapped_core
+                        if c not in cores_in_group:
+                            cores_in_group.append(c)
+                    reduce_mem = self.out_tiles[b][m][n].get_physical_address()
+                    reduce_core_id = list(reduce_mem.keys())[0].local_id
+                    reduce_core = self.wafer.get_core(self.node_id, reduce_core_id)
+                    if reduce_core not in cores_in_group:
+                        cores_in_group.append(reduce_core)
+                    for core in cores_in_group:
+                        Barrier(f"{self.uid}_barrier_reduce_{b}_{m}_{n}",
+                                cores_in_group).map_to_core(core)
 
         for b in self.reduce_ops:
             for m in self.reduce_ops[b]:

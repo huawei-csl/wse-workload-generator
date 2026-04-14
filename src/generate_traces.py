@@ -17,6 +17,7 @@ from src.core_level.layers.concat import Concat
 from src.core_level.layers.slice import Slice
 from src.core_level.layers.reduce import Sum
 from src.core_level.layers.alltoallv import AlltoAllv
+from src.core_level.layers.barrier import Barrier
 
 from src.core_level.common.graph import init_graph
 from src.core_level.common.tile import load_tiling_config
@@ -268,8 +269,19 @@ def generate_traces(args):
                 # raise NotImplementedError
                 logging.warning("Operation {} not recognized.".format(row["operation"]))
 
-    # Run layers from the compute graph in a BFS order
+    # Layer categories for cross-layer barrier insertion
+    INSTRUCTION_PRODUCING_LAYERS = {
+        LinearLayer, GroupedLinearLayer, MLALayer, Sum,
+        AllreduceLayer, UnicastLayer, MulticastLayer, AlltoAllv,
+    }
+    METADATA_LAYERS = {View, Split, Transpose, Concat, Slice}
+
+    # Run layers from the compute graph in topological order
     topo_queue = graph.get_topological_order()
+
+    # Per-node tracking for cross-layer barriers
+    last_producing_uid = {}  # node_id → uid of last instruction-producing layer
+    barrier_counter = 0
 
     for node in topo_queue:
         print(f"Mapping {node.uid} in node_id {node.node_id}")
@@ -286,8 +298,21 @@ def generate_traces(args):
         layer_class = layer_attrs[node_id][uid]["type"]
         layer_params = layer_attrs[node_id][uid]["attrs"]
 
+        # Insert cross-layer barrier before instruction-producing layers
+        if layer_class in INSTRUCTION_PRODUCING_LAYERS:
+            if node_id in last_producing_uid:
+                barrier_id = f"cross_layer_{barrier_counter}"
+                barrier_counter += 1
+                all_cores = [wafer.get_core(node_id, i)
+                             for i in range(wafer.num_cores_per_node)]
+                for core in all_cores:
+                    Barrier(barrier_id, all_cores).map_to_core(core)
+
         layer = layer_class(**layer_params)
         layer.log_stats()
+
+        if layer_class in INSTRUCTION_PRODUCING_LAYERS:
+            last_producing_uid[node_id] = uid
 
     wafer.export_traces(args.iter, f"{args.outdir}/traces/decode")
 
