@@ -36,32 +36,38 @@ class TileGemmOp:
         core.add_instruction(self)
         logging.debug("TileGemmOp {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
     
-    def get_traces(self) -> List[str]:
+    def get_traces(self) -> List:
         M, K = self.input_tile.dims
         _, N = self.weight_tile.dims
 
         traces = []
+        nid = 0
+        read_ids: List[int] = []
 
-        # Read input tile from memory
-        mem_sizes = self.input_tile.get_physical_address()
-        for bank, size in mem_sizes.items():
-            traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+        # Read input tile from memory.
+        for bank, size in self.input_tile.get_physical_address().items():
+            traces.append(InstructionSet.READ(bank.bank_id, size, self.id, local_id=nid))
+            read_ids.append(nid)
+            nid += 1
             self.stats.add_reads(size)
 
-        # Read weight tile from memory
-        mem_sizes = self.weight_tile.get_physical_address()
-        for bank, size in mem_sizes.items():
-            traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+        # Read weight tile from memory.
+        for bank, size in self.weight_tile.get_physical_address().items():
+            traces.append(InstructionSet.READ(bank.bank_id, size, self.id, local_id=nid))
+            read_ids.append(nid)
+            nid += 1
             self.stats.add_reads(size)
 
-        # Perform GEMM operation
-        traces.append(InstructionSet.GEMM([M, K, N], self.id))
+        # GEMM depends on all preceding READs.
+        gemm_id = nid
+        traces.append(InstructionSet.GEMM([M, K, N], self.id, local_id=gemm_id, deps=read_ids))
+        nid += 1
         self.stats.add_cube(self.mapped_core.core_id, 2 * M * K * N)
 
-        # Write output tile back to memory
-        mem_sizes = self.out_tile.get_physical_address()
-        for bank, size in mem_sizes.items():
-            traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id))
+        # Each WRITE depends on the GEMM that produced the data.
+        for bank, size in self.out_tile.get_physical_address().items():
+            traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id, local_id=nid, deps=[gemm_id]))
+            nid += 1
             self.stats.add_writes(size)
 
         return traces

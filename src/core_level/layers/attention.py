@@ -38,37 +38,52 @@ class TileAttnOp:
         core.add_instruction(self)
         logging.debug("TileAttnOp {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
     
-    def get_traces(self) -> List[str]:
+    def get_traces(self) -> List:
         B, _, H, D = self.q_tile.dims
         _, S_kv, _ = self.kv_tile.dims
         _, _, _, Do = self.out_tile.dims
 
         traces = []
+        nid = 0
+        read_ids: List[int] = []
 
-        # Read query tile from memory
-        mem_sizes = self.q_tile.get_physical_address()
-        for bank, size in mem_sizes.items():
-            traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+        # Read query tile from memory.
+        for bank, size in self.q_tile.get_physical_address().items():
+            traces.append(InstructionSet.READ(bank.bank_id, size, self.id, local_id=nid))
+            read_ids.append(nid)
+            nid += 1
             self.stats.add_reads(size)
 
-        # Read KV tile from memory
-        mem_sizes = self.kv_tile.get_physical_address()
-        for bank, size in mem_sizes.items():
-            traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+        # Read KV tile from memory.
+        for bank, size in self.kv_tile.get_physical_address().items():
+            traces.append(InstructionSet.READ(bank.bank_id, size, self.id, local_id=nid))
+            read_ids.append(nid)
+            nid += 1
             self.stats.add_reads(size)
 
-        for b in range(B):
-            traces.append(InstructionSet.GEMM([H, D, S_kv], self.id))
+        # QK^T GEMMs: depend on the Q and KV reads.
+        qkt_ids: List[int] = []
+        for _ in range(B):
+            traces.append(InstructionSet.GEMM([H, D, S_kv], self.id, local_id=nid, deps=read_ids))
+            qkt_ids.append(nid)
+            nid += 1
             self.stats.add_cube(self.mapped_core.core_id, 2 * H * D * S_kv)
 
-        for b in range(B):
-            traces.append(InstructionSet.GEMM([H, S_kv, Do], self.id))
+        # AV GEMMs consume the QK^T scratchpad in addition to the prior reads
+        # (KV for V, Q if anything else is re-read). No intermediate tile is
+        # emitted to memory, so express the QK^T→AV producer edge explicitly.
+        av_ids: List[int] = []
+        av_deps = read_ids + qkt_ids
+        for _ in range(B):
+            traces.append(InstructionSet.GEMM([H, S_kv, Do], self.id, local_id=nid, deps=av_deps))
+            av_ids.append(nid)
+            nid += 1
             self.stats.add_cube(self.mapped_core.core_id, 2 * H * S_kv * Do)
 
-        # Write output tile back to memory
-        mem_sizes = self.out_tile.get_physical_address()
-        for bank, size in mem_sizes.items():
-            traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id))
+        # Each WRITE depends on every AV GEMM that contributed to the output.
+        for bank, size in self.out_tile.get_physical_address().items():
+            traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id, local_id=nid, deps=av_ids))
+            nid += 1
             self.stats.add_writes(size)
 
         return traces
