@@ -20,9 +20,7 @@ class Barrier:
         logging.debug("Barrier {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
     
     
-    def get_traces(self) -> List[str]:
-        traces = []
-
+    def get_traces(self) -> List:
         hash = hashlib.md5((self.id + "_".join(map(str, self.group))).encode()).hexdigest()[:16]
 
         # Tag the comment with "intrabarrier" when every participating core
@@ -34,6 +32,5 @@ class Barrier:
         if len({core.node_id for core in self.group}) == 1:
             comment = comment.replace("barrier", "intrabarrier", 1)
 
-        traces.append(InstructionSet.BARRIER(hash, comment))
-        return traces
+        return [InstructionSet.BARRIER(hash, comment, local_id=0)]
 

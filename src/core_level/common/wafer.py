@@ -23,14 +23,22 @@ class Core:
         self.core_id = node_id * num_cores_per_node + local_id
         self.instruction_queue = []
         self.traces = []
+        self.next_id = 0
 
     def __str__(self):
         return str(self.core_id)
 
     def add_instruction(self, tile_op: "TileGemmOp"):
         self.instruction_queue.append(tile_op)
-        traces = tile_op.get_traces()
-        self.traces += traces
+        # Each tile-op emits Instructions with local ids contiguous from 0.
+        # Rebase them to this core's file-wide id space on append, shifting
+        # both local_id and local_deps by the same constant offset.
+        base = self.next_id
+        for instr in tile_op.get_traces():
+            gid = base + instr.local_id
+            gdeps = [base + d for d in instr.local_deps]
+            self.traces.append(instr.render(gid, gdeps))
+            self.next_id = gid + 1
         logging.debug("TileGemmOp {} is added to core {} instruction queue.".format(tile_op.id, self.core_id))
     
     def get_traces(self):

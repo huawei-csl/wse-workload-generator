@@ -33,37 +33,42 @@ class TileGroupGemmOp:
         core.add_instruction(self)
         logging.debug("TileGroupGemmOp {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
     
-    def get_traces(self) -> List[str]:
+    def get_traces(self) -> List:
         B, M, K = self.input_tile.dims
         _, _, N = self.weight_tile.dims
 
         traces = []
+        nid = 0
+        read_ids: List[int] = []
 
-        # Read input tile from memory
-        mem_sizes = self.input_tile.get_physical_address()
-        for bank, size in mem_sizes.items():
-            traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+        # Read input tile from memory.
+        for bank, size in self.input_tile.get_physical_address().items():
+            traces.append(InstructionSet.READ(bank.bank_id, size, self.id, local_id=nid))
+            read_ids.append(nid)
+            nid += 1
             self.stats.add_reads(size)
-            # stats["reads"] += size
 
-        # Read weight tile from memory
-        mem_sizes = self.weight_tile.get_physical_address()
-        for bank, size in mem_sizes.items():
-            traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+        # Read weight tile from memory.
+        for bank, size in self.weight_tile.get_physical_address().items():
+            traces.append(InstructionSet.READ(bank.bank_id, size, self.id, local_id=nid))
+            read_ids.append(nid)
+            nid += 1
             self.stats.add_reads(size)
-            # stats["reads"] += size
 
-        for b in range(B):
-            traces.append(InstructionSet.GEMM([M, K, N], self.id))
+        # Each per-batch GEMM depends on all preceding READs (coarse — the
+        # physical-address map doesn't expose which bank feeds which slice).
+        gemm_ids: List[int] = []
+        for _ in range(B):
+            traces.append(InstructionSet.GEMM([M, K, N], self.id, local_id=nid, deps=read_ids))
+            gemm_ids.append(nid)
+            nid += 1
             self.stats.add_cube(self.mapped_core.core_id, 2 * M * K * N)
-            # stats["flops"] += 2 * M * K * N
 
-        # Write output tile back to memory
-        mem_sizes = self.out_tile.get_physical_address()
-        for bank, size in mem_sizes.items():
-            traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id))
+        # Each WRITE depends on all GEMMs that produced the output tile.
+        for bank, size in self.out_tile.get_physical_address().items():
+            traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id, local_id=nid, deps=gemm_ids))
+            nid += 1
             self.stats.add_writes(size)
-            # stats["writes"] += size
 
         return traces
 
