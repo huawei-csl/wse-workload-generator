@@ -27,24 +27,42 @@ class TileReduceOp:
         core.add_instruction(self)
         logging.debug("TileReduceOp {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
     
-    def get_traces(self) -> List[str]:
+    def get_traces(self) -> List:
         traces = []
+        nid = 0
+        # Track the READ ids belonging to each input tile, and the running
+        # accumulator (most recent ADD, or the READs of the first tile while
+        # no ADD has been emitted yet).
+        prev_acc_ids: List[int] = []
+        last_add_id = None
 
-        # Read input tiles from memory
         for i, tile in enumerate(self.in_tiles):
-            mem_sizes = tile.get_physical_address()
-            for bank, size in mem_sizes.items():
-                traces.append(InstructionSet.READ(bank.bank_id, size, self.id))
+            cur_read_ids: List[int] = []
+            for bank, size in tile.get_physical_address().items():
+                traces.append(InstructionSet.READ(bank.bank_id, size, self.id, local_id=nid))
+                cur_read_ids.append(nid)
+                nid += 1
                 self.stats.add_reads(size)
 
-            if i > 0:
-                traces.append(InstructionSet.ADD(self.out_tile.dims, self.id))
+            if i == 0:
+                # First tile seeds the accumulator; no ADD yet.
+                prev_acc_ids = cur_read_ids
+            else:
+                # ADD_i depends on the reads of tile i and on the running
+                # accumulator (ADD_{i-1}, or READ_0 for the first ADD).
+                add_deps = list(prev_acc_ids) + cur_read_ids
+                traces.append(InstructionSet.ADD(self.out_tile.dims, self.id, local_id=nid, deps=add_deps))
+                last_add_id = nid
+                prev_acc_ids = [nid]
+                nid += 1
                 self.stats.add_vector(self.mapped_core.core_id, eval("*".join(map(str, self.out_tile.dims))))
 
-        # Write output tile back to memory
-        mem_sizes = self.out_tile.get_physical_address()
-        for bank, size in mem_sizes.items():
-            traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id))
+        # WRITEs depend on the last ADD (final accumulator). If there was no
+        # ADD (single input tile), fall back to the seed READs.
+        write_deps = [last_add_id] if last_add_id is not None else list(prev_acc_ids)
+        for bank, size in self.out_tile.get_physical_address().items():
+            traces.append(InstructionSet.WRITE(bank.bank_id, size, self.id, local_id=nid, deps=write_deps))
+            nid += 1
             self.stats.add_writes(size)
 
         return traces

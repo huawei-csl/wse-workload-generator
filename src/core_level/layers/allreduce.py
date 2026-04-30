@@ -27,8 +27,9 @@ class TileAllreduceStage1Op:
         core.add_instruction(self)
         logging.debug("TileAllreduceStage1Op {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
     
-    def get_traces(self) -> List[str]:
+    def get_traces(self) -> List:
         traces = []
+        nid = 0
 
         send0_mem_sizes = self.send0_tile.get_physical_address()
         next_mem_sizes = self.next_tile.get_physical_address()
@@ -41,8 +42,10 @@ class TileAllreduceStage1Op:
             next_size = next_mem_sizes[next_bank]
 
             assert send0_size == next_size, "Mismatched send0 and next tile sizes in TileAllreduceStage1Op {}.".format(self.id)
-            
-            traces.append(InstructionSet.COPY(send0_bank.bank_id, next_bank.bank_id, send0_size, self.id))
+
+            # COPY carries no explicit deps; barriers surround allreduce stages.
+            traces.append(InstructionSet.COPY(send0_bank.bank_id, next_bank.bank_id, send0_size, self.id, local_id=nid))
+            nid += 1
             self.stats.add_copy(send0_size)
 
         return traces
@@ -64,8 +67,9 @@ class TileAllreduceStage2Op:
         core.add_instruction(self)
         logging.debug("TileAllreduceStage2Op {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
     
-    def get_traces(self) -> List[str]:
+    def get_traces(self) -> List:
         traces = []
+        nid = 0
 
         send_mem_sizes = self.send_tile.get_physical_address()
         next_mem_sizes = self.next_tile.get_physical_address()
@@ -79,8 +83,10 @@ class TileAllreduceStage2Op:
             next_size = next_mem_sizes[next_bank]
 
             assert send_size == next_size, "Mismatched send0 and next tile sizes in TileAllreduceStage1Op {}.".format(self.id)
-            
-            traces.append(InstructionSet.COPY(send_bank.bank_id, next_bank.bank_id, send_size, self.id))
+
+            # COPY carries no explicit deps; barriers surround allreduce stages.
+            traces.append(InstructionSet.COPY(send_bank.bank_id, next_bank.bank_id, send_size, self.id, local_id=nid))
+            nid += 1
             self.stats.add_copy(send_size)
 
         return traces

@@ -24,8 +24,9 @@ class TileMulticastOp:
         core.add_instruction(self)
         logging.debug("TileMulticastOp {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
 
-    def get_traces(self) -> List[str]:
+    def get_traces(self) -> List:
         traces = []
+        nid = 0
 
         send_mem_sizes = self.input_tile.get_physical_address()
         for i in range(len(send_mem_sizes)):
@@ -41,10 +42,12 @@ class TileMulticastOp:
                 recv_size = recv_mem_sizes[recv_bank]
 
                 assert send_size == recv_size, "Mismatched send0 and next tile sizes in TileMulticastOp {}.".format(self.id)
-                
+
                 recv_banks.append(recv_bank.bank_id)
 
-            traces.append(InstructionSet.MULTICAST(send_bank.bank_id, recv_banks, send_size, self.id))
+            # MULTICAST carries no explicit deps; barriers handle ordering.
+            traces.append(InstructionSet.MULTICAST(send_bank.bank_id, recv_banks, send_size, self.id, local_id=nid))
+            nid += 1
             self.stats.add_multicast(send_size)
 
         return traces

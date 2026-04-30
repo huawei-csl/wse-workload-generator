@@ -23,8 +23,9 @@ class TileUnicastOp:
         core.add_instruction(self)
         logging.debug("TileUnicastOp {} is mapped to core {}.".format(self.id, self.mapped_core.core_id))
 
-    def get_traces(self) -> List[str]:
+    def get_traces(self) -> List:
         traces = []
+        nid = 0
 
         send_mem_sizes = self.input_tile.get_physical_address()
         recv_mem_sizes = self.out_tile.get_physical_address()
@@ -32,30 +33,32 @@ class TileUnicastOp:
         assert sum(send_mem_sizes.values()) == sum(recv_mem_sizes.values()), "Mismatched total memory sizes between send0 and next tile in TileUnicastOp {}.".format(self.id)
         assert len(send_mem_sizes) == 1 or len(recv_mem_sizes) == 1, "TileUnicastOp {} supports only 1-to-many or many-to-1 mem copies.".format(self.id)
 
+        # COPY carries no explicit deps: barriers inserted by the containing
+        # layer provide the required cross-op ordering.
         total_data_size = 0
         if len(recv_mem_sizes) > 1:
             for i in range(len(recv_mem_sizes)):
                 send_bank = list(send_mem_sizes.keys())[0]
-
                 recv_bank = list(recv_mem_sizes.keys())[i]
                 data_size = recv_mem_sizes[recv_bank]
-                
+
                 if send_bank != recv_bank:
-                    traces.append(InstructionSet.COPY(send_bank.bank_id, recv_bank.bank_id, data_size, self.id))
+                    traces.append(InstructionSet.COPY(send_bank.bank_id, recv_bank.bank_id, data_size, self.id, local_id=nid))
+                    nid += 1
                     self.stats.add_copy(data_size)
                 total_data_size += data_size
         else:
             for i in range(len(send_mem_sizes)):
                 send_bank = list(send_mem_sizes.keys())[i]
                 data_size = send_mem_sizes[send_bank]
-
                 recv_bank = list(recv_mem_sizes.keys())[0]
-                
+
                 if send_bank != recv_bank:
-                    traces.append(InstructionSet.COPY(send_bank.bank_id, recv_bank.bank_id, data_size, self.id))
+                    traces.append(InstructionSet.COPY(send_bank.bank_id, recv_bank.bank_id, data_size, self.id, local_id=nid))
+                    nid += 1
                     self.stats.add_copy(data_size)
                 total_data_size += data_size
-                
+
         assert total_data_size == sum(send_mem_sizes.values()), "Mismatched total data sizes in TileUnicastOp {}.".format(self.id)
         return traces
 
