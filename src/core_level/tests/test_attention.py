@@ -4,7 +4,7 @@ from src.core_level.common.wafer import Wafer
 from src.core_level.common.tensor import reset_tensor_registry
 from src.core_level.common.graph import Graph
 from src.core_level.common.tensor import Tensor
-from src.core_level.layers.attention import MLALayer
+from src.core_level.layers.mla import MLALayer
 
 @pytest.mark.parametrize(
     "bsz, seqlen_q, seqlen_kv, num_heads, kv_lora_rank, qk_rope_head_dim, q_tile_size, kv_tile_size",

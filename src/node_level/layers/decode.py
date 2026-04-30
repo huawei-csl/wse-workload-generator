@@ -7,33 +7,34 @@ from src.node_level.layers.moe import MoE
 
 from src.node_level.layers.mla_naive_block import MLANaiveBlock
 from src.node_level.layers.mla_absorb_block import MLAAbsorbBlock
+from src.node_level.layers.mha_block import GQABlock
 
 from src.node_level.common.utils import intceil
 
 class LlamaDecodeLayer:
     def __init__(self, layer_id, hidden_size, num_attention_heads, num_key_value_heads, intermediate_size, dist_info, dtype) -> None:
         super().__init__()
-        raise NotImplementedError
     
         logging.info("Creating Decode layer {}".format(layer_id))
 
+        self.layer_id = layer_id
         self.dist_info = dist_info
 
         self.attention = GQABlock(layer_id+"_attn", hidden_size, num_attention_heads, num_key_value_heads, dist_info, dtype)
-        self.ffn = FFN(layer_id+"_ffn", hidden_size, intermediate_size, dist_info, dtype)
+        self.ffn = FFN(layer_id+"_ffn", hidden_size, intermediate_size, dist_info, dtype, is_dense_layer=True)
 
-    def forward(self, queries, ctx_len, stats):
-        bsz, seqlen, _ = queries.dims
-        self.attention.forward(bsz, seqlen, ctx_len, stats=stats)
-
-        seqlen_per_device_ffn = intceil(seqlen/self.dist_info.sp) # This is only effective in prefill, seqlen=1 in decode anyway
-        self.ffn.forward(bsz*seqlen_per_device_ffn, stats=stats)
-
+    def forward(self, x, ctx_len, stats):
+        x = self.attention.forward(x, ctx_len, stats=stats)
+        x = self.ffn.forward(x, stats=stats)
+        return x 
+    
     def memory_footprint(self, bsz, ctx_len):
-        bsz_per_device_attn = intceil(bsz/self.dist_info.dp_attn)
+        batch_ids = self.dist_info.get_local_batchids("attn")
+        bsz_per_device_attn = len(batch_ids)
         mem_size = self.attention.memory_footprint(bsz_per_device_attn, ctx_len)
 
-        bsz_per_device_ffn = intceil(bsz/self.dist_info.dp_ffn)
+        batch_ids = self.dist_info.get_local_batchids("ffn")
+        bsz_per_device_ffn = len(batch_ids)
         mem_size += self.ffn.memory_footprint(bsz_per_device_ffn)
 
         return mem_size # in bytes
@@ -84,11 +85,8 @@ class DSv3DecodeLayer:
         self.attention.set_next_layer(self.ffn)
 
     def forward(self, x, ctx_len, stats):
-
         x = self.attention.forward(x, ctx_len, stats=stats)
-
         x = self.ffn.forward(x, stats=stats)
-
         return x
 
     def memory_footprint(self, bsz, ctx_len):

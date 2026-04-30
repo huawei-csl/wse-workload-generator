@@ -9,7 +9,7 @@ from src.node_level.common.logger import init_logger
 from src.node_level.common.utils import byte_to_str
 
 from src.core_level.common import Wafer
-from src.core_level.layers import LinearLayer, GroupedLinearLayer, MLALayer, UnicastLayer, MulticastLayer, AllreduceLayer
+from src.core_level.layers import LinearLayer, GroupedLinearLayer, MLALayer, MHALayer, UnicastLayer, MulticastLayer, AllreduceLayer
 from src.core_level.layers.view import View
 from src.core_level.layers.split import Split
 from src.core_level.layers.transpose import Transpose
@@ -137,8 +137,8 @@ def generate_traces(args):
                 kv_dims = bsz, seqlen_kv, kv_lora_rank
                 pe_dims = bsz, seqlen_kv, qk_rope_head_dim
 
-                q_tile_size = load_tiling_config("configs/tiling.json", "AttentionQ", q_dims, uid)
-                kv_tile_size = load_tiling_config("configs/tiling.json", "AttentionKV", kv_dims, uid)
+                q_tile_size = load_tiling_config("configs/tiling.json", "MLAQ", q_dims, uid)
+                kv_tile_size = load_tiling_config("configs/tiling.json", "MLAKV", kv_dims, uid)
 
                 layer_attrs[node_id][uid] = {
                     "type": MLALayer, 
@@ -155,7 +155,39 @@ def generate_traces(args):
                         "prec": prec
                     }
                 }
+            
+            elif row["operation"] == "SelfAttention":
+                uid = row["uid"]
+                out_dims = row["Dimensions"].split(" -> ")[-1][1:-1].split(", ")
+                bsz, seqlen_q, num_heads, head_dim = int(out_dims[0]), int(out_dims[1]), int(out_dims[2]), int(out_dims[3])
+                assert seqlen_q == 1, "Only support seqlen_q == 1 for decoding."
+                kv_dims = row["Dimensions"].split(" -> ")[0].split(", V: ")[-1][1:-1].split(", ")
                 
+                _, seqlen_kv, num_kv_heads, _ = int(kv_dims[0]), int(kv_dims[1]), int(kv_dims[2]), int(kv_dims[3])
+                assert int(kv_dims[0]) == bsz             
+
+                q_dims = bsz, seqlen_q, num_heads, head_dim
+                kv_dims = bsz, seqlen_kv, num_kv_heads, head_dim
+
+                q_tile_size = load_tiling_config("configs/tiling.json", "MHAQ", q_dims, uid)
+                kv_tile_size = load_tiling_config("configs/tiling.json", "MHAKV", kv_dims, uid)
+
+                layer_attrs[node_id][uid] = {
+                    "type": MHALayer, 
+                    "attrs":{
+                        "uid": uid,
+                        "node_id": node_id,
+                        "graph": graph,
+                        "q_dims": q_dims,
+                        "kv_dims": kv_dims,
+                        "q_tile_size": q_tile_size,
+                        "kv_tile_size": kv_tile_size,
+                        "wafer": wafer,
+                        "prec": prec
+                    }
+                }                
+
+
             elif row["operation"] == "Multicast":
                 uid = row["uid"]
                 dims = list(map(int, row["Dimensions"][1:-1].split(","))) 

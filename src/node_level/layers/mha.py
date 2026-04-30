@@ -1,25 +1,31 @@
 
 import logging
 
+from src.node_level.common.tensor import Tensor
 from src.node_level.common.utils import dtype_to_byte, intceil
+from src.node_level.common.compute_graph import get_compute_graph
 
 class SelfAttention:
-    def __init__(self, uid, num_attention_heads, num_key_value_heads, head_dim, seq_parallel, dist_info, dtype) -> None:
+    def __init__(self, uid, rank, num_attention_heads, num_key_value_heads, head_dim, seq_parallel, dtype) -> None:
         super().__init__()
 
-        raise NotImplementedError("Not yet implemented, ask for support")
-    
         logging.debug("SelfAttention layer {} with KV-cache dims: bsz x ctx_len x {} x {}".format(uid, num_key_value_heads, head_dim))
 
         self.uid = uid
+        self.rank = rank 
         self.num_attention_heads = num_attention_heads
         self.num_key_value_heads = num_key_value_heads
         self.head_dim = head_dim
         self.dtype = dtype
         self.seq_parallel = seq_parallel
-        self.dist_info = dist_info
 
-    def forward(self, bsz, seqlen, ctx_len=None, stats=None):
+    def forward(self, x, ctx_len=None, stats=None):
+        assert len(x.dims) == 4, "Input tensor must be 4D (bsz, seqlen, n_local_heads, head_dim)"
+
+        bsz, seqlen, n_local_heads, head_dim = x.dims
+        assert n_local_heads == self.num_attention_heads, "Input n_local_heads {} does not match n_local_heads {}".format(n_local_heads, self.num_attention_heads)
+        assert head_dim == self.head_dim, "Input head dim {} does not match head_dim {}".format(head_dim, self.head_dim)
+
         memory_footprint = self.memory_footprint(bsz, ctx_len)
         num_ops = self.num_ops(bsz, seqlen, ctx_len)
         hbm_reads = self.hbm_reads(bsz, ctx_len)
@@ -27,8 +33,11 @@ class SelfAttention:
         dims = self.get_dims(bsz, seqlen, ctx_len)
 
         logging.debug("{} memory footprint: {} B, n_ops: {} MACs, HBM read: {} B, dims: {}".format(self.uid, memory_footprint, num_ops, hbm_reads, dims))
+        out = Tensor(f"{self.uid}_out", self.rank, (bsz, seqlen, self.num_attention_heads, self.head_dim))
         stats.append(self.uid, "SelfAttention", memory_footprint, num_ops, hbm_reads, network_data, comm_group=None, dims=dims)
-        
+        get_compute_graph().add_node(self, [x], [out], attrs=None)
+        return out 
+    
     def memory_footprint(self, bsz, ctx_len):
         memory_footprint = 2 * bsz * intceil(ctx_len/self.seq_parallel) * self.num_key_value_heads * self.head_dim * dtype_to_byte(self.dtype) # KV-cache
         return memory_footprint  # KV-cache only, in bytes

@@ -130,8 +130,8 @@ class MLALayer:
             for s, pS in enumerate(range(0, S_kv, Ts_kv)):
                 qkv_out_tensor = Tensor(
                         uid=f"{self.node_id}:{self.uid}_qkv_out_{s}",
-                        dims=[B, 1, H, D],
-                        prec=self.prec,
+                        dims=[B, 1, H, D], #TODO: Is hardcoded 1 correct here in case of spec dec?
+                        prec=self.prec, 
                     )
                 self.qkv_out_tensors.append(qkv_out_tensor)
 
@@ -200,9 +200,6 @@ class MLALayer:
                 self.kv_tiles[b][s] = self.kv_tensor.slice([(b*Tb, b*Tb + tiled_B), (s*Ts_kv, s*Ts_kv + tiled_S), (0, D+D_pe)])
     
     def create_ops(self):
-        _, S_kv, _ = self.kv_dims
-        _, Ts_kv, _ = self.kv_tile_size
-
         for b in self.q_tiles:
             self.tile_ops[b] = {}
             for h in self.q_tiles[b]:

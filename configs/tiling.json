@@ -8,7 +8,9 @@
     "defaults": {
         "Linear": [16, 1024, 64],
         "GroupedLinear": [1, 16, 128, 64],
-        "AttentionQ": [1, 1, null, null],
-        "AttentionKV": [1, 512, null]
+        "MLAQ": [1, 1, null, null],
+        "MLAKV": [1, 512, null],
+        "MHAQ": [1, 1, null, null],
+        "MHAKV": [1, 512, null, null]
     }
 }

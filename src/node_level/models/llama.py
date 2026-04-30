@@ -1,13 +1,12 @@
 
-
+from src.node_level.layers.decode import LlamaDecodeLayer
+from src.node_level.layers.lmhead import LMHead
 from src.node_level.models.model import Model
-
+from src.node_level.common.utils import divide_equal
 
 class Llama(Model):
     def __init__(self, model_config, dist_info, dtype, layer_ids, out_dir) -> None:
         super().__init__(model_config, dist_info, dtype, out_dir)
-
-        raise NotImplementedError
 
         self.dist_info = dist_info
         self.num_hidden_layers = model_config["num_hidden_layers"]
@@ -47,3 +46,12 @@ class Llama(Model):
                     vocab_size=self.vocab_size,
                     dist_info=dist_info,
                     dtype=dtype)
+        else:
+            self.head = None
+
+        if len(self.layers) == 0 and self.head is None:
+            assert False, "No layers selected for the model."
+
+    def set_global_bsz(self, global_bsz):
+        for layer in self.layers:
+            layer.set_global_bsz(global_bsz)
