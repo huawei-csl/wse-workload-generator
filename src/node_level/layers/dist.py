@@ -43,13 +43,17 @@ class AllGather:
         assert len(x.dims) == 3, "Input tensor must be 3D with shape [bsz, seqlen, hidden_dim]"
         _, seqlen, hidden_dim = x.dims
 
-        assert x.dims[0] == self.vector_sizes[self.dist_info.rank]
-        
+        # vector_sizes is aligned with dst_nodes (not with global rank ids), so an all-gather
+        # can be performed over an arbitrary sub-group (e.g. a DP cluster) and not only over
+        # the full set of nodes.
+        local_pos = self.dst_nodes.index(self.dist_info.rank)
+        assert x.dims[0] == self.vector_sizes[local_pos]
+
         # Receive buffers. recv_buffs[i] corresponds to the buffer for receiving data from dst_nodes[i]
         recv_buffs = [Tensor(f"{self.uid}_ag_{src_id}", self.dist_info.rank, (self.vector_sizes[j], seqlen, hidden_dim)) for j, src_id in enumerate(self.dst_nodes)]
-        
+
         # Destination tensors. dst_tensors[i] corresponds to the tensor for sending data to dst_nodes[i]
-        dst_buffs = [Tensor(f"{self.uid}_ag_{self.dist_info.rank}", dst_id, (self.vector_sizes[self.dist_info.rank], seqlen, hidden_dim)) for i, dst_id in enumerate(self.dst_nodes)]
+        dst_buffs = [Tensor(f"{self.uid}_ag_{self.dist_info.rank}", dst_id, (self.vector_sizes[local_pos], seqlen, hidden_dim)) for i, dst_id in enumerate(self.dst_nodes)]
 
         network_size = self.network_data(x.dims)
         stats.append(self.uid, "AllGather", 0, 0, 0, network_size, comm_group=self.dst_nodes, dims=x.dims)

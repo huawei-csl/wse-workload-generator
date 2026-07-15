@@ -52,7 +52,12 @@ class MoE:
 
     def get_batchids_by_expert(self, seqlen, expert_id):
         if expert_id == "shared":
-            batch_ids = sorted(np.array([batch_id for batch_id, mapped_shared in self.dist_info.batch_to_shared_exp.items() if self.rank == mapped_shared]))
+            if self.dist_info.tp_ffn == self.dist_info.num_nodes and self.dist_info.num_nodes > 1:
+                # full-TP FFN: the shared expert is tensor-parallel across all nodes and every
+                # node processes the full (gathered) batch, so it sees every batch id.
+                batch_ids = list(range(get_moe_gate_model().global_bsz))
+            else:
+                batch_ids = sorted(np.array([batch_id for batch_id, mapped_shared in self.dist_info.batch_to_shared_exp.items() if self.rank == mapped_shared]))
             batch_ids = [(b, s) for b in batch_ids for s in range(seqlen)]
         else:
             expert_routings = get_moe_gate_model().get_expert_routings(layer_id=self.uid)
@@ -552,7 +557,51 @@ class MoE:
             )
         return out_tensor
 
+    def forward_gather_full_batch(self, x, stats):
+        '''
+        Full-TP FFN: the FFN forms a single tensor-parallel group over all nodes, whereas the
+        attention output only holds this node's DP-attn shard of the batch. All-gather the shards
+        across the DP-attn clusters so that every node holds the full global batch and therefore
+        routes an identical set of tokens to the experts. This guarantees the per-expert TP
+        all-reduce is a well-formed collective (same shape on every node, no expert asymmetrically
+        skipped because a single cluster happened to route it zero tokens).
+        '''
+        if self.dist_info.dp_attn == 1:
+            # no attention data parallelism => this node already holds the full batch
+            return x
+
+        # one representative node per DP-attn cluster (all share the same batch shard); order the
+        # peers by the first global batch id they hold so the gather reconstructs the batch in
+        # ascending global order regardless of how the comm group is enumerated.
+        dp_group = sorted(
+            self.dist_info.attn_comm_groups["dp_attn"],
+            key=lambda node: self.dist_info.get_local_batchids("attn", node)[0]
+        )
+        vector_sizes = [len(self.dist_info.get_local_batchids("attn", node)) for node in dp_group]
+
+        out_ag = get_dist_manager().allgather(
+            uid=self.uid + "_gather_fulltp_ag",
+            x=x,
+            vector_sizes=vector_sizes,
+            dst_nodes=dp_group,
+            dist_info=self.dist_info,
+            dtype=self.dtype,
+            stats=stats
+        )
+
+        # dp_group is sorted ascending, which matches ascending DP-attn cluster order and hence
+        # ascending global batch id order, so concatenating in this order reconstructs the batch.
+        x_global = Concat(
+            out_ag,
+            axis=0,
+            uid=self.uid + "_gather_fulltp_concat"
+        ).forward(stats=stats)
+        return x_global
+
     def forward_compute_expert_noep(self, seqlen, x, stats):
+        # Full-TP FFN: gather every DP-attn shard so this node holds and routes the full batch.
+        x = self.forward_gather_full_batch(x, stats)
+
         exp_outs = {}
         total_moe_num_tokens_per_device = 0
         for e in self.experts:
@@ -574,39 +623,42 @@ class MoE:
                     uid=f"{x.uid}_concat_expert{e}_" + hash_string("_".join([str(batch_id) for batch_id in recv_batch_ids]))
                 ).forward(stats=stats)
                 exp_outs[e] = self.experts[e].forward(x_exp, stats=stats)
-                
+
             total_moe_num_tokens_per_device += len(recv_batch_ids)
 
         if self.shared_expert:
             exp_outs["shared"] = self.shared_expert.forward(x, stats=stats)
             exp_outs["shared"] = View(
-                exp_outs["shared"], 
+                exp_outs["shared"],
                 [x.dims[0]*x.dims[1], 1, x.dims[2]],
                 uid=exp_outs["shared"].uid + "_view_shared"
             ).forward(stats=stats)
 
-        batch_ids = self.dist_info.get_batch_dist_within_dp()
-        
+        # Every node holds the full batch and (after the per-expert TP all-reduce) the complete
+        # expert outputs, so the weighted sum is computed for every global token here and the node
+        # keeps only its own DP-attn shard afterwards.
+        batch_ids = list(range(self.global_bsz))
+
         out_sums = []
         for batch_id in batch_ids:
             mapping = get_moe_gate_model().get_mapping_by_batchids(self.uid, batch_id)
             for seq_id in range(seqlen):
                 expert_ids = [expert_id for expert_id in mapping[:, seq_id].tolist()]
-                
+
                 x_recv = []
                 for expert_id in expert_ids + ["shared"]:
                     exp_input_batch_ids = self.get_batchids_by_expert(seqlen, expert_id)
                     buff_ind = exp_input_batch_ids.index((batch_id, seq_id))
-                    
+
                     x_recv.append(
                         Slice(exp_outs[expert_id], [buff_ind], axis=0).forward(stats=stats)
                     )
 
                 assert len(x_recv) == self.num_experts_per_tok + self.n_shared_experts
                 x_recv = Concat(
-                        x_recv, 
+                        x_recv,
                         axis=0).forward(stats=stats)
-                
+
                 out_sums.append(
                     Sum(f"{self.uid}_sum_{batch_id}.{seq_id}", dims=x_recv.dims, axis=0, dist_info=self.dist_info, dtype=self.dtype).forward(x_recv, stats=stats)
                 )
@@ -619,6 +671,16 @@ class MoE:
             out_batch,
             [len(batch_ids), seqlen, self.hidden_size],
         ).forward(stats=stats)
+
+        # keep only this node's DP-attn shard of the batch for the residual stream
+        local_batch_ids = self.dist_info.get_local_batchids("attn")
+        if len(local_batch_ids) < len(batch_ids):
+            out_batch = Slice(
+                out_batch,
+                local_batch_ids,
+                axis=0,
+                uid=f"{self.uid}_combine_out_local_slice"
+            ).forward(stats=stats)
 
         logging.debug("Total number of routed samples for device {}: {}".format(self.dist_info.rank_ep, total_moe_num_tokens_per_device))
         return out_batch
